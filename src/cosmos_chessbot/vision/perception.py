@@ -15,7 +15,7 @@ class BoardState:
     """Extracted chess board state."""
 
     fen: str
-    """Board state in FEN notation."""
+    """Board state in FEN notation, or 'NO_BOARD_DETECTED' if no board visible."""
 
     confidence: float
     """Confidence score (0-1) for the extracted state."""
@@ -26,6 +26,11 @@ class BoardState:
     raw_response: str
     """Raw text response from Cosmos."""
 
+    @property
+    def board_detected(self) -> bool:
+        """Check if a chess board was detected in the image."""
+        return self.fen != "NO_BOARD_DETECTED" and self.confidence > 0.0
+
 
 class CosmosPerception:
     """Cosmos-Reason2 based perception for chess board analysis."""
@@ -34,19 +39,21 @@ class CosmosPerception:
 
     SYSTEM_PROMPT = "You are a precise physical reasoning assistant specialized in chess board perception."
 
-    PERCEPTION_PROMPT = """Analyze this overhead camera view of a chess board and extract the current board state.
+    PERCEPTION_PROMPT = """Analyze this overhead camera view and determine if there is a chess board present.
+
+IMPORTANT: First, verify that you can see a chess board in the image. If you cannot see a chess board, set the FEN to "NO_BOARD_DETECTED" and confidence to 0.0.
 
 Provide your response in the following JSON format:
 {
-    "fen": "the board position in FEN notation",
-    "confidence": a number between 0 and 1 indicating your confidence,
+    "fen": "the board position in FEN notation, or NO_BOARD_DETECTED if no board is visible",
+    "confidence": a number between 0 and 1 indicating your confidence (0.0 if no board detected),
     "anomalies": [
         "list of physical anomalies you observe",
-        "examples: 'white knight on f3 is tilted', 'black pawn between d6 and d7', 'pieces occluding each other'"
+        "examples: 'no chess board visible', 'white knight on f3 is tilted', 'black pawn between d6 and d7', 'pieces occluding each other'"
     ]
 }
 
-Focus on:
+If a chess board IS present, focus on:
 1. Accurate piece identification and position
 2. Physical state of pieces (upright, tilted, knocked over)
 3. Pieces that are not centered on squares
@@ -54,6 +61,13 @@ Focus on:
 
 Be precise with the FEN notation. Remember the FEN format is: piece placement, active color, castling rights, en passant, halfmove clock, fullmove number.
 If you cannot determine some aspects (like whose turn it is), use reasonable defaults (white to move, all castling available).
+
+If NO chess board is visible in the image, respond with:
+{
+    "fen": "NO_BOARD_DETECTED",
+    "confidence": 0.0,
+    "anomalies": ["no chess board visible in image"]
+}
 """
 
     def __init__(

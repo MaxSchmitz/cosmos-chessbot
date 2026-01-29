@@ -44,15 +44,25 @@ def main():
     print("\n" + "=" * 60)
     print("RESULTS")
     print("=" * 60)
-    print(f"FEN: {board_state.fen}")
-    print(f"Confidence: {board_state.confidence:.2%}")
 
-    if board_state.anomalies:
-        print("\nAnomalies detected:")
-        for anomaly in board_state.anomalies:
-            print(f"  - {anomaly}")
+    if not board_state.board_detected:
+        print("⚠️  NO CHESS BOARD DETECTED")
+        print(f"Confidence: {board_state.confidence:.2%}")
+        if board_state.anomalies:
+            print("\nReason:")
+            for anomaly in board_state.anomalies:
+                print(f"  - {anomaly}")
     else:
-        print("\nNo anomalies detected")
+        print(f"✓ Chess board detected")
+        print(f"FEN: {board_state.fen}")
+        print(f"Confidence: {board_state.confidence:.2%}")
+
+        if board_state.anomalies:
+            print("\nAnomalies detected:")
+            for anomaly in board_state.anomalies:
+                print(f"  - {anomaly}")
+        else:
+            print("\nNo anomalies detected")
 
     print("\nRaw response:")
     print("-" * 60)
