@@ -37,28 +37,19 @@ class CosmosPerception:
 
     PIXELS_PER_TOKEN = 32**2
 
-    SYSTEM_PROMPT = "You are a chess board vision system. Your only job is to look at chess board images and output the exact position in FEN notation."
+    SYSTEM_PROMPT = "You are a chess position analyzer."
 
-    PERCEPTION_PROMPT = """Look at this chess board and describe what pieces you see on each rank, then output the FEN.
+    PERCEPTION_PROMPT = """Analyze this chess board image and output the position in FEN notation.
 
-Rank 8 (top, black's side): [describe pieces left to right]
-Rank 7: [describe]
-Rank 6: [describe]
-Rank 5: [describe]
-Rank 4: [describe]
-Rank 3: [describe]
-Rank 2: [describe]
-Rank 1 (bottom, white's side): [describe pieces left to right]
-
-Then output in JSON:
+Return in JSON format:
 {
-    "fen": "position w/b KQkq - 0 1",
-    "confidence": 0.0-1.0,
-    "anomalies": []
+    "fen": "complete FEN string with all 6 components",
+    "confidence": number between 0 and 1,
+    "anomalies": ["list any issues you observe"]
 }
 
-FEN notation: K/Q/R/B/N/P = white, k/q/r/b/n/p = black, numbers = empty squares, / = rank separator
-Example: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+FEN format: piece_placement active_color castling en_passant halfmove fullmove
+Pieces: K/Q/R/B/N/P (white), k/q/r/b/n/p (black), numbers (empty squares), / (rank separator)
 """
 
     def __init__(
