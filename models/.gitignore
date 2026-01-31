@@ -1,0 +1,11 @@
+# Ignore model files (too large for git)
+*.onnx
+*.pt
+*.pth
+*.pb
+*.tflite
+*.h5
+
+# Keep the README
+!README.md
+!.gitignore
