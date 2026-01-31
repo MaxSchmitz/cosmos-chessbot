@@ -14,7 +14,7 @@ def main():
         "--overhead-camera",
         type=int,
         default=0,
-        help="Overhead camera device ID (default: 0)",
+        help="Egocentric camera device ID (default: 0)",
     )
     parser.add_argument(
         "--wrist-camera",
@@ -52,23 +52,56 @@ def main():
         default=None,
         help="Number of moves to execute (default: run until game end)",
     )
+    parser.add_argument(
+        "--policy",
+        type=str,
+        default="cosmos",
+        choices=["pi05", "cosmos"],
+        help="Policy to use: pi05 or cosmos (default: cosmos)",
+    )
+    parser.add_argument(
+        "--policy-checkpoint",
+        type=Path,
+        default=None,
+        help="Path to policy checkpoint (optional, uses base model if not specified)",
+    )
+    parser.add_argument(
+        "--enable-planning",
+        action="store_true",
+        default=True,
+        help="Enable planning for Cosmos Policy (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-enable-planning",
+        dest="enable_planning",
+        action="store_false",
+        help="Disable planning for Cosmos Policy",
+    )
 
     args = parser.parse_args()
 
     config = OrchestratorConfig(
-        overhead_camera_id=args.overhead_camera,
+        egocentric_camera_id=args.egocentric_camera,
         wrist_camera_id=args.wrist_camera,
         stockfish_path=args.stockfish,
         cosmos_model=args.model,
         cosmos_server_url=args.cosmos_server,
         data_dir=args.data_dir,
+        policy_type=args.policy,
+        policy_checkpoint=args.policy_checkpoint,
+        enable_planning=args.enable_planning,
     )
 
     print("Initializing Cosmos Chessbot...")
-    print(f"  Overhead camera: {args.overhead_camera}")
+    print(f"  Egocentric camera: {args.egocentric_camera}")
     print(f"  Wrist camera: {args.wrist_camera}")
     print(f"  Stockfish: {args.stockfish}")
-    print(f"  Model: {args.model}")
+    print(f"  Perception model: {args.model}")
+    print(f"  Policy: {args.policy}")
+    if args.policy_checkpoint:
+        print(f"  Policy checkpoint: {args.policy_checkpoint}")
+    if args.policy == "cosmos":
+        print(f"  Planning: {'enabled' if args.enable_planning else 'disabled'}")
     print()
 
     with ChessOrchestrator(config) as orchestrator:

@@ -93,10 +93,10 @@ Pieces: K/Q/R/B/N/P (white), k/q/r/b/n/p (black), numbers (empty squares), / (ra
         max_new_tokens: int = 2048,
         temperature: float = 0.1,
     ) -> BoardState:
-        """Extract board state from overhead camera image.
+        """Extract board state from egocentric camera image.
 
         Args:
-            image: PIL Image from overhead camera
+            image: PIL Image from egocentric camera
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (lower = more deterministic)
 

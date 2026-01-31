@@ -1,5 +1,5 @@
 """Main orchestrator for the chess manipulation system."""
 
-from .orchestrator import ChessOrchestrator
+from .orchestrator import ChessOrchestrator, OrchestratorConfig
 
-__all__ = ["ChessOrchestrator"]
+__all__ = ["ChessOrchestrator", "OrchestratorConfig"]

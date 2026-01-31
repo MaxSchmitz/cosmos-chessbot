@@ -12,13 +12,21 @@ from ..stockfish import StockfishEngine
 class OrchestratorConfig:
     """Configuration for the chess orchestrator."""
 
-    overhead_camera_id: int = 0
+    egocentric_camera_id: int = 0
     wrist_camera_id: int = 1
     stockfish_path: str = "stockfish"
     cosmos_model: str = "nvidia/Cosmos-Reason2-2B"
     cosmos_server_url: Optional[str] = None
     """If set, use remote Cosmos server instead of local inference."""
     data_dir: Path = Path("data/raw")
+
+    # Policy configuration
+    policy_type: str = "cosmos"
+    """Policy to use: 'pi05' or 'cosmos'"""
+    policy_checkpoint: Optional[Path] = None
+    """Path to policy checkpoint (None uses base model)"""
+    enable_planning: bool = True
+    """Enable planning for Cosmos Policy (ignored for π₀.₅)"""
 
 
 class ChessOrchestrator:
@@ -31,10 +39,10 @@ class ChessOrchestrator:
         self.config = config
 
         # Initialize cameras
-        self.overhead_camera = Camera(
+        self.egocentric_camera = Camera(
             CameraConfig(
-                device_id=config.overhead_camera_id,
-                name="overhead"
+                device_id=config.egocentric_camera_id,
+                name="egocentric"
             )
         )
         self.wrist_camera = Camera(
@@ -55,19 +63,37 @@ class ChessOrchestrator:
         # Initialize Stockfish
         self.engine = StockfishEngine(engine_path=config.stockfish_path)
 
-        # TODO: Initialize policy (π₀.₅)
-        self.policy = None
+        # Initialize selected policy
+        self._init_policy()
+
+    def _init_policy(self):
+        """Initialize the selected manipulation policy."""
+        if self.config.policy_type == "pi05":
+            from ..policy.pi05_policy import PI05Policy
+            print(f"Initializing π₀.₅ policy...")
+            self.policy = PI05Policy(
+                checkpoint_path=self.config.policy_checkpoint
+            )
+        elif self.config.policy_type == "cosmos":
+            from ..policy.cosmos_policy import CosmosPolicy
+            print(f"Initializing Cosmos Policy...")
+            self.policy = CosmosPolicy(
+                checkpoint_path=self.config.policy_checkpoint,
+                enable_planning=self.config.enable_planning
+            )
+        else:
+            raise ValueError(f"Unknown policy type: {self.config.policy_type}")
 
     def __enter__(self):
         """Initialize all components."""
-        self.overhead_camera.__enter__()
+        self.egocentric_camera.__enter__()
         self.wrist_camera.__enter__()
         self.engine.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Cleanup all components."""
-        self.overhead_camera.__exit__(exc_type, exc_val, exc_tb)
+        self.egocentric_camera.__exit__(exc_type, exc_val, exc_tb)
         self.wrist_camera.__exit__(exc_type, exc_val, exc_tb)
         self.engine.stop()
 
@@ -77,15 +103,15 @@ class ChessOrchestrator:
         Returns:
             Tuple of (overhead_image, wrist_image)
         """
-        overhead = self.overhead_camera.capture()
+        overhead = self.egocentric_camera.capture()
         wrist = self.wrist_camera.capture()
         return overhead, wrist
 
     def perceive(self, overhead_image) -> BoardState:
-        """Extract board state from overhead camera.
+        """Extract board state from egocentric camera.
 
         Args:
-            overhead_image: PIL Image from overhead camera
+            overhead_image: PIL Image from egocentric camera
 
         Returns:
             BoardState with FEN, confidence, and anomalies
@@ -131,18 +157,72 @@ class ChessOrchestrator:
         }
 
     def execute(self, intent: dict) -> bool:
-        """Execute physical manipulation.
+        """Execute physical manipulation with selected policy.
 
         Args:
             intent: Manipulation intent from compile_intent
 
         Returns:
             True if execution succeeded
-
-        TODO: Integrate π₀.₅ policy
         """
-        print(f"TODO: Execute {intent}")
-        return False  # Not implemented yet
+        # Get current observations
+        overhead, wrist = self.sense()
+        robot_state = self._get_robot_state()
+
+        images = {"egocentric": overhead, "wrist": wrist}
+
+        # Create instruction for π₀.₅ (if using language)
+        instruction = None
+        if self.config.policy_type == "pi05":
+            instruction = (
+                f"Pick the piece at {intent['pick_square']} "
+                f"and place it at {intent['place_square']}"
+            )
+
+        # Plan or select action
+        if self.config.enable_planning and hasattr(self.policy, 'plan_action'):
+            # Get multiple candidates (Cosmos Policy with planning)
+            candidates = self.policy.plan_action(images, robot_state, instruction)
+            action = candidates[0]  # Best candidate
+
+            print(f"Planning: Selected action with {action.success_probability:.2%} confidence")
+            print(f"  (from {len(candidates)} candidates)")
+        else:
+            # Direct action (π₀.₅ or Cosmos without planning)
+            action = self.policy.select_action(images, robot_state, instruction)
+            print(f"Direct action with {action.success_probability:.2%} confidence")
+
+        # Execute on robot
+        success = self._execute_robot_action(action.actions)
+
+        return success
+
+    def _get_robot_state(self):
+        """Get current robot state (joint positions, gripper, etc.).
+
+        Returns:
+            numpy array of robot state
+
+        TODO: Implement robot state reading from SO-101
+        """
+        import numpy as np
+        # Placeholder: 7 DOF arm + gripper state
+        return np.zeros(8)
+
+    def _execute_robot_action(self, actions):
+        """Execute predicted actions on the robot.
+
+        Args:
+            actions: Action tensor from policy (typically [horizon, action_dim])
+
+        Returns:
+            True if execution succeeded
+
+        TODO: Implement robot control for SO-101
+        """
+        print(f"TODO: Execute robot actions with shape {actions.shape}")
+        # For now, just simulate success
+        return False
 
     def verify(self, expected_fen: str) -> tuple[bool, BoardState]:
         """Verify board state after action.
