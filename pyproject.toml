@@ -18,6 +18,7 @@ dependencies = [
     "uvicorn>=0.32.0",
     "pydantic>=2.0.0",
     "onnxruntime>=1.16.0",
+    "ultralytics>=8.0.0",
 ]
 
 # Note: LeRobot has version conflicts with Cosmos (torch<2.8 vs torch>=2.9)
