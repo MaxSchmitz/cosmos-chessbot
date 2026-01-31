@@ -145,6 +145,7 @@ class FENDetector:
         pieces = []
         for result in results:
             boxes = result.boxes
+            print(f"DEBUG: YOLO detected {len(boxes)} objects")
             for box in boxes:
                 # Get detection info
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
@@ -302,11 +303,10 @@ class FENDetector:
 
         # Convert to PIL Image
         fig.canvas.draw()
-        vis_image = Image.frombytes(
-            'RGB',
-            fig.canvas.get_width_height(),
-            fig.canvas.tostring_rgb()
-        )
+        # Use buffer_rgba() instead of tostring_rgb() for macOS compatibility
+        buf = fig.canvas.buffer_rgba()
+        vis_image = Image.frombuffer('RGBA', fig.canvas.get_width_height(), buf, 'raw', 'RGBA', 0, 1)
+        vis_image = vis_image.convert('RGB')
         plt.close(fig)
 
         return vis_image, fen
