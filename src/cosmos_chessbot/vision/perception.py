@@ -39,40 +39,94 @@ class CosmosPerception:
 
     SYSTEM_PROMPT = "You are a precise physical reasoning assistant specialized in chess board perception."
 
-    PERCEPTION_PROMPT = """Analyze this overhead camera view and determine if there is a chess board present.
+    PERCEPTION_PROMPT = """Analyze this image and extract the chess board position in FEN (Forsyth-Edwards Notation).
 
 IMPORTANT: First, verify that you can see a chess board in the image. If you cannot see a chess board, set the FEN to "NO_BOARD_DETECTED" and confidence to 0.0.
 
-Provide your response in the following JSON format:
+=== FEN NOTATION EXPLAINED ===
+
+FEN has 6 components separated by spaces:
+1. Piece placement (rank 8 to rank 1, separated by /)
+2. Active color (w or b)
+3. Castling availability (KQkq or - if none)
+4. En passant target square (e.g., e3 or - if none)
+5. Halfmove clock (number, use 0 if unknown)
+6. Fullmove number (number, use 1 if unknown)
+
+Example: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+
+=== PIECE NOTATION ===
+- Uppercase = White pieces: K (King), Q (Queen), R (Rook), B (Bishop), N (Knight), P (Pawn)
+- Lowercase = Black pieces: k (king), q (queen), r (rook), b (bishop), n (knight), p (pawn)
+- Numbers 1-8 = consecutive empty squares
+- / = separates ranks (rows)
+
+=== COORDINATE SYSTEM ===
+Files (columns): a-h from left to right (from white's perspective)
+Ranks (rows): 8 at the top (black's side) to 1 at the bottom (white's side)
+
+=== HOW TO SCAN THE BOARD ===
+
+Step 1: Identify the board orientation
+- Rank 8 (black's starting rank) should be at the TOP
+- Rank 1 (white's starting rank) should be at the BOTTOM
+- If the board is viewed from black's perspective, mentally rotate it
+
+Step 2: Scan each rank from rank 8 to rank 1
+For EACH rank, scan from file a to file h (left to right):
+  - If square is empty, count it (combine consecutive empty squares into a number)
+  - If square has a piece, identify it (K/Q/R/B/N/P for white, k/q/r/b/n/p for black)
+
+Step 3: Build the FEN string
+- Rank 8: e.g., "rnbqkbnr" (black's back rank)
+- Add "/" separator
+- Rank 7: e.g., "pppppppp" (black's pawns)
+- Continue for all 8 ranks
+- Add space and other components: " w KQkq - 0 1"
+
+Example scanning:
+- Starting position rank 8: r n b q k b n r → "rnbqkbnr"
+- Starting position rank 7: p p p p p p p p → "pppppppp"
+- Starting position rank 6: empty row → "8"
+- Starting position rank 5: empty row → "8"
+- Starting position rank 4: empty row → "8"
+- Starting position rank 3: empty row → "8"
+- Starting position rank 2: P P P P P P P P → "PPPPPPPP"
+- Starting position rank 1: R N B Q K B N R → "RNBQKBNR"
+Full FEN: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+=== YOUR TASK ===
+
+1. First, confirm you see a chess board
+2. Identify board orientation (which side is rank 8, which is rank 1)
+3. Scan systematically rank by rank (8→1), file by file (a→h)
+4. Build the piece placement string
+5. Determine active color (w or b)
+6. Determine castling rights (KQkq, or - if unknown)
+7. Determine en passant square (or - if none)
+8. Use 0 for halfmove clock, 1 for fullmove number (if unknown)
+
+Provide your response in JSON format:
 {
-    "fen": "the board position in FEN notation, or NO_BOARD_DETECTED if no board is visible",
-    "confidence": a number between 0 and 1 indicating your confidence (0.0 if no board detected),
-    "anomalies": [
-        "list of physical anomalies you observe",
-        "examples: 'no chess board visible', 'white knight on f3 is tilted', 'black pawn between d6 and d7', 'pieces occluding each other'"
-    ]
+    "fen": "complete FEN notation with all 6 components",
+    "confidence": a number between 0 and 1,
+    "anomalies": ["list any physical issues: tilted pieces, pieces between squares, occlusions, etc."]
 }
 
-If a chess board IS present, focus on:
-1. Accurate piece identification and position
-2. Physical state of pieces (upright, tilted, knocked over)
-3. Pieces that are not centered on squares
-4. Any occlusions or ambiguities
-
-Be precise with the FEN notation. Remember the FEN format is: piece placement, active color, castling rights, en passant, halfmove clock, fullmove number.
-If you cannot determine some aspects (like whose turn it is), use reasonable defaults (white to move, all castling available).
-
-If NO chess board is visible in the image, respond with:
+If NO chess board is visible:
 {
     "fen": "NO_BOARD_DETECTED",
     "confidence": 0.0,
     "anomalies": ["no chess board visible in image"]
 }
+
+CRITICAL: The FEN MUST have all 6 components separated by spaces. Example format:
+"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 """
 
     def __init__(
         self,
-        model_name: str = "nvidia/Cosmos-Reason2-2B",
+        model_name: str = "nvidia/Cosmos-Reason2-8B",
         device: str = "auto",
         dtype: torch.dtype = torch.float16,
         min_vision_tokens: int = 256,
