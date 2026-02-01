@@ -37,53 +37,55 @@ def load_jsonl_dataset(jsonl_path: Path) -> List[Dict]:
     return data
 
 
-def prepare_dataset(data: List[Dict], processor) -> Dataset:
-    """Convert JSONL data to Hugging Face Dataset with processed inputs."""
+class VisionLanguageDataCollator:
+    """Custom data collator that processes samples on-the-fly during training."""
 
-    def process_example(example):
-        # Load image
-        image = Image.open(example["image"]).convert("RGB")
+    def __init__(self, processor):
+        self.processor = processor
 
-        # Get user prompt and assistant response
-        user_content = example["conversations"][0]["content"]
-        assistant_content = example["conversations"][1]["content"]
+    def __call__(self, features):
+        """Process a batch of raw samples."""
+        batch_images = []
+        batch_texts = []
 
-        # Create conversation format
-        conversation = [
-            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": user_content}]},
-            {"role": "assistant", "content": [{"type": "text", "text": assistant_content}]},
-        ]
+        for feature in features:
+            # Load image
+            image = Image.open(feature["image"]).convert("RGB")
+            batch_images.append(image)
 
-        # Process with processor
-        text = processor.apply_chat_template(conversation, tokenize=False)
-        inputs = processor(
-            text=text,
-            images=[image],
+            # Create conversation
+            user_content = feature["conversations"][0]["content"]
+            assistant_content = feature["conversations"][1]["content"]
+
+            conversation = [
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": user_content}]},
+                {"role": "assistant", "content": [{"type": "text", "text": assistant_content}]},
+            ]
+
+            # Apply chat template
+            text = self.processor.apply_chat_template(conversation, tokenize=False)
+            batch_texts.append(text)
+
+        # Process batch
+        batch = self.processor(
+            text=batch_texts,
+            images=batch_images,
             return_tensors="pt",
             padding=True,
             truncation=True,
         )
 
-        # Flatten batch dimension
-        inputs = {k: v.squeeze(0) if v.ndim > 1 else v for k, v in inputs.items()}
-
         # Set labels (same as input_ids for causal LM)
-        inputs["labels"] = inputs["input_ids"].clone()
+        batch["labels"] = batch["input_ids"].clone()
 
-        return inputs
+        return batch
 
-    # Process all examples
-    processed_data = []
-    for example in data:
-        try:
-            processed = process_example(example)
-            processed_data.append(processed)
-        except Exception as e:
-            logger.warning(f"Failed to process {example['image']}: {e}")
 
-    # Convert to Dataset
-    dataset = Dataset.from_list(processed_data)
-    logger.info(f"Prepared {len(dataset)} examples")
+def prepare_dataset(data: List[Dict]) -> Dataset:
+    """Convert JSONL data to Hugging Face Dataset (no processing, just load metadata)."""
+    # Create dataset from raw data - no image processing yet
+    dataset = Dataset.from_list(data)
+    logger.info(f"Created dataset with {len(dataset)} samples (will process during training)")
     return dataset
 
 
@@ -240,9 +242,13 @@ def main():
     train_data = load_jsonl_dataset(args.train_data)
     val_data = load_jsonl_dataset(args.val_data)
 
-    logger.info("Processing datasets...")
-    train_dataset = prepare_dataset(train_data, processor)
-    val_dataset = prepare_dataset(val_data, processor)
+    logger.info("Preparing datasets...")
+    train_dataset = prepare_dataset(train_data)
+    val_dataset = prepare_dataset(val_data)
+
+    # Create data collator for on-the-fly processing
+    logger.info("Creating data collator...")
+    data_collator = VisionLanguageDataCollator(processor)
 
     # Load model
     logger.info(f"\nLoading base model {args.model_name}...")
@@ -304,6 +310,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
 
