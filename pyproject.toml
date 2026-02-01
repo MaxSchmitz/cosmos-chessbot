@@ -21,6 +21,10 @@ dependencies = [
     "ultralytics>=8.0.0",
     "python-chess>=1.10.0",
     "python-dotenv>=1.0.0",
+    "peft>=0.7.0",
+    "datasets>=2.14.0",
+    "bitsandbytes>=0.41.0",
+    "wandb>=0.16.0",
 ]
 
 # Note: LeRobot has version conflicts with Cosmos (torch<2.8 vs torch>=2.9)
