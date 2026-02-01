@@ -38,6 +38,7 @@ ENV/
 data/raw/*
 data/episodes/*
 data/eval/*
+data/chessboards/*
 !data/raw/.gitkeep
 !data/episodes/.gitkeep
 !data/eval/.gitkeep
@@ -55,6 +56,9 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment variables
+.env
 
 # uv
 uv.lock

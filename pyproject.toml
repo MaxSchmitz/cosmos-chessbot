@@ -20,6 +20,7 @@ dependencies = [
     "onnxruntime>=1.16.0",
     "ultralytics>=8.0.0",
     "python-chess>=1.10.0",
+    "python-dotenv>=1.0.0",
 ]
 
 # Note: LeRobot has version conflicts with Cosmos (torch<2.8 vs torch>=2.9)

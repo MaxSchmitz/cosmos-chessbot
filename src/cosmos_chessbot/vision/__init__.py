@@ -6,6 +6,7 @@ from .remote_perception import RemoteCosmosPerception
 from .board_segmentation import BoardSegmentation
 from .fen_detection import FENDetector, ChessPiece
 from .fenify_detector import FenifyDetector
+from .llm_fen_detector import LLMFenDetector
 
 __all__ = [
     "Camera",
@@ -17,4 +18,5 @@ __all__ = [
     "FENDetector",
     "ChessPiece",
     "FenifyDetector",
+    "LLMFenDetector",
 ]

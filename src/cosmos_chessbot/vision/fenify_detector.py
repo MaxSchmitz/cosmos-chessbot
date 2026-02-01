@@ -28,13 +28,11 @@ class FenifyDetector:
     def __init__(
         self,
         model_path: Optional[Path] = None,
-        device: Optional[str] = None,
     ):
         """Initialize Fenify detector.
 
         Args:
             model_path: Path to Fenify model file (.pt)
-            device: Device to run on ('cuda', 'cpu', or None for auto)
         """
         # Add fenify-3D to Python path
         if str(FENIFY_DIR) not in sys.path:
@@ -58,19 +56,10 @@ class FenifyDetector:
                 "Download from: https://github.com/notnil/fenify-3D/releases"
             )
 
-        # Set device
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        self.device = device
-
         # Load model
-        self.predictor = BoardPredictor(
-            model_file_path=str(model_path),
-            device=device
-        )
+        self.predictor = BoardPredictor(model_file_path=str(model_path))
 
-        print(f"Loaded Fenify-3D model from {model_path} on {device}")
+        print(f"Loaded Fenify-3D model from {model_path}")
 
     def detect_fen(
         self,
