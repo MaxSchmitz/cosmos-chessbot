@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from peft import PeftModel
 from tqdm import tqdm
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModel, AutoProcessor
 
 
 def normalize_fen(fen: str) -> str:
@@ -78,7 +78,7 @@ def evaluate_model(model_path: Path, test_data_path: Path, max_samples: int = No
         trust_remote_code=True
     )
 
-    base_model = AutoModelForVision2Seq.from_pretrained(
+    base_model = AutoModel.from_pretrained(
         base_model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",

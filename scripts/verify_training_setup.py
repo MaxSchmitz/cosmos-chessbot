@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModel, AutoProcessor
 
 
 def check_gpu():
@@ -79,7 +79,7 @@ def check_model():
         print(f"✅ Processor loaded")
 
         # Load model (small test)
-        model = AutoModelForVision2Seq.from_pretrained(
+        model = AutoModel.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
             device_map="auto",

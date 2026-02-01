@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from peft import PeftModel
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModel, AutoProcessor
 
 
 def test_model(model_path: Path, image_path: Path, prompt: str = None):
@@ -34,7 +34,7 @@ def test_model(model_path: Path, image_path: Path, prompt: str = None):
         trust_remote_code=True
     )
 
-    base_model = AutoModelForVision2Seq.from_pretrained(
+    base_model = AutoModel.from_pretrained(
         base_model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",

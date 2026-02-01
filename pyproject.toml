@@ -25,6 +25,7 @@ dependencies = [
     "datasets>=2.14.0",
     "bitsandbytes>=0.41.0",
     "wandb>=0.16.0",
+    "tqdm>=4.66.0",
 ]
 
 # Note: LeRobot has version conflicts with Cosmos (torch<2.8 vs torch>=2.9)

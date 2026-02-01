@@ -16,7 +16,7 @@ from datasets import Dataset
 from PIL import Image
 from peft import LoraConfig, get_peft_model
 from transformers import (
-    AutoModelForVision2Seq,
+    AutoModel,
     AutoProcessor,
     Trainer,
     TrainingArguments,
@@ -246,7 +246,7 @@ def main():
 
     # Load model
     logger.info(f"\nLoading base model {args.model_name}...")
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = AutoModel.from_pretrained(
         args.model_name,
         torch_dtype=torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else torch.float32),
         device_map="auto",
