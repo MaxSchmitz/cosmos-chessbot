@@ -133,8 +133,8 @@ def main():
     parser.add_argument(
         "--num-epochs",
         type=int,
-        default=3,
-        help="Number of training epochs",
+        default=15,
+        help="Number of training epochs (default: 15 for better convergence)",
     )
     parser.add_argument(
         "--batch-size",
@@ -151,20 +151,20 @@ def main():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=2e-5,
-        help="Learning rate",
+        default=5e-5,
+        help="Learning rate (increased from 2e-5 for faster convergence)",
     )
     parser.add_argument(
         "--lora-r",
         type=int,
-        default=16,
-        help="LoRA rank",
+        default=32,
+        help="LoRA rank (increased from 16 for more capacity)",
     )
     parser.add_argument(
         "--lora-alpha",
         type=int,
-        default=32,
-        help="LoRA alpha",
+        default=64,
+        help="LoRA alpha (scaled with rank)",
     )
     parser.add_argument(
         "--lora-dropout",
@@ -181,14 +181,14 @@ def main():
     parser.add_argument(
         "--save-steps",
         type=int,
-        default=500,
-        help="Save checkpoint every N steps",
+        default=200,
+        help="Save checkpoint every N steps (more frequent for monitoring)",
     )
     parser.add_argument(
         "--eval-steps",
         type=int,
-        default=500,
-        help="Evaluate every N steps",
+        default=200,
+        help="Evaluate every N steps (more frequent for monitoring)",
     )
     parser.add_argument(
         "--max-grad-norm",
