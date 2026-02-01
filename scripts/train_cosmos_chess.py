@@ -96,6 +96,43 @@ def setup_lora_model(model, lora_config: LoraConfig):
     return model
 
 
+class VisionLanguageTrainer(Trainer):
+    """Custom trainer that computes loss for vision-language models."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """Compute loss manually for models that don't return loss."""
+        labels = inputs.pop("labels")
+
+        # Forward pass
+        outputs = model(**inputs)
+
+        # Get logits - check different possible output formats
+        if hasattr(outputs, "logits"):
+            logits = outputs.logits
+        elif hasattr(outputs, "last_hidden_state"):
+            # If only hidden states, we need the lm_head
+            # This shouldn't happen if model is loaded correctly
+            raise ValueError("Model only returned hidden states, no logits. Check model loading.")
+        else:
+            raise ValueError(f"Unexpected model output: {outputs.keys()}")
+
+        # Compute cross entropy loss
+        import torch.nn.functional as F
+
+        # Shift logits and labels for causal LM
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        # Flatten tokens
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+
+        return (loss, outputs) if return_outputs else loss
+
+
 def compute_metrics(eval_pred):
     """Compute metrics for evaluation."""
     # Simple loss tracking for now
@@ -306,7 +343,7 @@ def main():
     )
 
     # Initialize Trainer
-    trainer = Trainer(
+    trainer = VisionLanguageTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
