@@ -16,6 +16,7 @@ from datasets import Dataset
 from PIL import Image
 from peft import LoraConfig, get_peft_model
 from transformers import (
+    AutoConfig,
     AutoModel,
     AutoProcessor,
     Trainer,
@@ -94,43 +95,6 @@ def setup_lora_model(model, lora_config: LoraConfig):
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     return model
-
-
-class VisionLanguageTrainer(Trainer):
-    """Custom trainer that computes loss for vision-language models."""
-
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """Compute loss manually for models that don't return loss."""
-        labels = inputs.pop("labels")
-
-        # Forward pass
-        outputs = model(**inputs)
-
-        # Get logits - check different possible output formats
-        if hasattr(outputs, "logits"):
-            logits = outputs.logits
-        elif hasattr(outputs, "last_hidden_state"):
-            # If only hidden states, we need the lm_head
-            # This shouldn't happen if model is loaded correctly
-            raise ValueError("Model only returned hidden states, no logits. Check model loading.")
-        else:
-            raise ValueError(f"Unexpected model output: {outputs.keys()}")
-
-        # Compute cross entropy loss
-        import torch.nn.functional as F
-
-        # Shift logits and labels for causal LM
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-
-        # Flatten tokens
-        loss = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
-
-        return (loss, outputs) if return_outputs else loss
 
 
 def compute_metrics(eval_pred):
@@ -287,9 +251,29 @@ def main():
     logger.info("Creating data collator...")
     data_collator = VisionLanguageDataCollator(processor)
 
-    # Load model
+    # Load model with correct architecture class
     logger.info(f"\nLoading base model {args.model_name}...")
-    model = AutoModel.from_pretrained(
+
+    # Get config to determine correct model class
+    config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
+    logger.info(f"Model architecture: {config.architectures[0] if config.architectures else 'Unknown'}")
+
+    # Import the model class dynamically
+    # For Qwen3VLForConditionalGeneration, it's defined in the model repo with trust_remote_code
+    import importlib
+    import sys
+
+    # Try to import from transformers first
+    try:
+        transformers_module = importlib.import_module("transformers")
+        model_class = getattr(transformers_module, config.architectures[0])
+        logger.info(f"Using model class from transformers: {config.architectures[0]}")
+    except AttributeError:
+        # If not in transformers, it will be loaded via trust_remote_code
+        logger.info(f"Model class not in transformers, using trust_remote_code")
+        model_class = AutoModel
+
+    model = model_class.from_pretrained(
         args.model_name,
         torch_dtype=torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else torch.float32),
         device_map="auto",
@@ -343,7 +327,7 @@ def main():
     )
 
     # Initialize Trainer
-    trainer = VisionLanguageTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
