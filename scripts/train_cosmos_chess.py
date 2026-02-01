@@ -272,7 +272,8 @@ def main():
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
         bias="none",
-        task_type="CAUSAL_LM",
+        # Don't specify task_type for custom vision-language models
+        # This avoids requiring prepare_inputs_for_generation
     )
     model = setup_lora_model(model, lora_config)
 
