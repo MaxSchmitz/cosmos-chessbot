@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from peft import PeftModel
 from tqdm import tqdm
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 
 def normalize_fen(fen: str) -> str:
@@ -78,7 +78,19 @@ def evaluate_model(model_path: Path, test_data_path: Path, max_samples: int = No
         trust_remote_code=True
     )
 
-    base_model = AutoModel.from_pretrained(
+    # Get correct model architecture
+    config = AutoConfig.from_pretrained(base_model_name, trust_remote_code=True)
+    print(f"Loading {config.architectures[0]}...")
+
+    # Import model class
+    import importlib
+    transformers_module = importlib.import_module("transformers")
+    try:
+        model_class = getattr(transformers_module, config.architectures[0])
+    except AttributeError:
+        model_class = AutoModel
+
+    base_model = model_class.from_pretrained(
         base_model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",

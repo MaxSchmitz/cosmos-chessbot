@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from peft import PeftModel
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 
 def test_model(model_path: Path, image_path: Path, prompt: str = None):
@@ -34,7 +34,19 @@ def test_model(model_path: Path, image_path: Path, prompt: str = None):
         trust_remote_code=True
     )
 
-    base_model = AutoModel.from_pretrained(
+    # Get correct model architecture
+    config = AutoConfig.from_pretrained(base_model_name, trust_remote_code=True)
+    print(f"Loading {config.architectures[0]}...")
+
+    # Import model class
+    import importlib
+    transformers_module = importlib.import_module("transformers")
+    try:
+        model_class = getattr(transformers_module, config.architectures[0])
+    except AttributeError:
+        model_class = AutoModel
+
+    base_model = model_class.from_pretrained(
         base_model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
