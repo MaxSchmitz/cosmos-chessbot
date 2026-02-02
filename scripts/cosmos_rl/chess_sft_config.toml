@@ -1,0 +1,66 @@
+# Cosmos-RL Training Configuration for Chess FEN Detection
+# Adapted from intelligent-transportation recipe:
+# https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/post_training/reason2/intelligent-transportation/post_training.html
+
+[custom.dataset]
+# Update these paths on GPU server to absolute paths
+annotation_path = "data/value_llava/chess_fen_train.json"
+media_path = ""  # Empty because image paths are absolute in JSON
+system_prompt = "You are a helpful chess analysis assistant."
+
+[custom.vision]
+# Use single frame for static chess board images (not videos)
+nframes = 1
+# Optional: Can adjust image resolution if needed
+# max_pixels = 786432  # Default: 768 vision tokens
+
+[train]
+# Learning rate: Higher than cookbook (5e-5 vs 2e-5) for faster convergence
+optm_lr = 5e-5
+output_dir = "outputs/chess_fen"
+optm_warmup_steps = 0  # No warmup for our dataset size (per cookbook best practice)
+optm_decay_type = "cosine"
+optm_weight_decay = 0.01
+
+# Batch size: Adjust based on GPU memory
+# H100 80GB: can handle 8-16
+# A100 40GB: use 4-8
+train_batch_per_replica = 8
+
+# Validation
+enable_validation = true
+validation_freq = 500  # Validate every 500 steps
+
+# Compilation (can speed up training)
+compile = false  # Set to true if using PyTorch 2.0+
+
+[policy]
+model_name_or_path = "nvidia/Cosmos-Reason2-8B"
+model_max_length = 32768
+
+[logging]
+logger = ['console', 'wandb']
+project_name = "cosmos_chessbot"
+experiment_name = "chess_fen_value_180k"
+
+[train.train_policy]
+type = "sft"
+mini_batch = 1
+dataset.test_size = 0
+dataloader_num_workers = 4
+dataloader_prefetch_factor = 4
+
+[train.ckpt]
+enable_checkpoint = true
+save_freq = 500  # Save checkpoint every 500 steps
+save_total_limit = 3  # Keep only 3 most recent checkpoints
+
+[policy.parallelism]
+# Single GPU configuration
+tp_size = 1
+cp_size = 1
+dp_shard_size = 1
+pp_size = 1
+
+# For multi-GPU (e.g., 8x A100):
+# dp_shard_size = 8
