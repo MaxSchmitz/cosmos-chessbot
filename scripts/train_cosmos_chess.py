@@ -175,8 +175,8 @@ def main():
     parser.add_argument(
         "--warmup-steps",
         type=int,
-        default=100,
-        help="Warmup steps",
+        default=0,
+        help="Warmup steps (0 for small datasets per Cosmos Cookbook)",
     )
     parser.add_argument(
         "--save-steps",
