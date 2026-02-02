@@ -27,58 +27,55 @@ from typing import List, Dict
 import argparse
 
 
-def load_value_dataset(value_root: Path) -> List[Dict]:
+def load_value_dataset(value_root: Path, split: str = "train") -> List[Dict]:
     """Load VALUE dataset annotations.
 
     Args:
         value_root: Root directory of VALUE dataset
+        split: "train" or "test"
 
     Returns:
         List of samples with image paths and FEN annotations
     """
-    # Load FEN annotations
-    fen_file = value_root / "data" / "fen_all.json"
+    # Load FEN annotations (VALUE has separate train/test files)
+    fen_file = value_root / "labels" / f"{split}_fen.json"
 
     if not fen_file.exists():
         raise FileNotFoundError(f"FEN file not found: {fen_file}")
 
-    print(f"Loading FEN annotations from {fen_file}...")
+    print(f"Loading {split} FEN annotations from {fen_file}...")
     with open(fen_file) as f:
         fen_data = json.load(f)
 
-    # VALUE format: either dict with image_id -> FEN, or list
-    # We'll handle both cases
+    # VALUE format: dict with image_id -> FEN
+    # Images are named CV_{image_id}.jpg in train/ or test/ directory
     samples = []
 
-    if isinstance(fen_data, dict):
-        for image_id, fen in fen_data.items():
-            image_path = value_root / "images" / f"{image_id}.jpg"
+    image_dir = value_root / split
+    if not image_dir.exists():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+    for image_id, fen in fen_data.items():
+        # VALUE uses CV_XXXXXXX.jpg format
+        image_filename = f"CV_{image_id.zfill(7)}.jpg"
+        image_path = image_dir / image_filename
+
+        if image_path.exists():
+            samples.append({
+                "id": f"{split}_{image_id}",
+                "image": str(image_path.absolute()),
+                "fen": fen
+            })
+        else:
+            # Try without padding
+            image_filename = f"CV_{image_id}.jpg"
+            image_path = image_dir / image_filename
             if image_path.exists():
                 samples.append({
-                    "id": image_id,
+                    "id": f"{split}_{image_id}",
                     "image": str(image_path.absolute()),
                     "fen": fen
                 })
-    elif isinstance(fen_data, list):
-        for idx, entry in enumerate(fen_data):
-            # Handle different possible formats
-            if isinstance(entry, dict):
-                image_id = entry.get("id", str(idx))
-                fen = entry.get("fen", "")
-            else:
-                image_id = str(idx)
-                fen = str(entry)
-
-            # Try different image naming conventions
-            for ext in [".jpg", ".png", ".jpeg"]:
-                image_path = value_root / "images" / f"{image_id}{ext}"
-                if image_path.exists():
-                    samples.append({
-                        "id": image_id,
-                        "image": str(image_path.absolute()),
-                        "fen": fen
-                    })
-                    break
 
     print(f"Found {len(samples)} samples with valid images")
     return samples
@@ -203,20 +200,33 @@ def main():
     print(f"Output dir: {args.output_dir}")
     print()
 
-    # Load VALUE dataset
-    samples = load_value_dataset(args.value_root)
+    # Load VALUE dataset (train and test separately)
+    print("Loading train set...")
+    train_samples = load_value_dataset(args.value_root, "train")
+
+    print("Loading test set...")
+    test_samples = load_value_dataset(args.value_root, "test")
 
     if args.max_samples:
-        samples = samples[:args.max_samples]
-        print(f"Using first {len(samples)} samples")
+        train_samples = train_samples[:int(args.max_samples * 0.9)]
+        test_samples = test_samples[:int(args.max_samples * 0.1)]
+        print(f"Using {len(train_samples)} train + {len(test_samples)} test samples")
 
     # Convert to Llava format
     print("\nConverting to Llava format...")
-    llava_samples = convert_to_llava_format(samples)
+    train_llava = convert_to_llava_format(train_samples)
+    test_llava = convert_to_llava_format(test_samples)
 
-    # Split dataset
-    print("\nSplitting dataset...")
-    splits = split_dataset(llava_samples, args.train_ratio, args.val_ratio)
+    # Split train into train/val
+    print("\nSplitting training data into train/val...")
+    random.shuffle(train_llava)
+    val_size = int(len(train_llava) * args.val_ratio / (args.train_ratio + args.val_ratio))
+
+    splits = {
+        "train": train_llava[val_size:],
+        "val": train_llava[:val_size],
+        "test": test_llava
+    }
 
     # Save splits
     args.output_dir.mkdir(parents=True, exist_ok=True)
