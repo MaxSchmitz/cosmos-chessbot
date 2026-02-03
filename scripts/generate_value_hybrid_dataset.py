@@ -1563,18 +1563,33 @@ class VALUEHybridGenerator:
         logger.debug(f"  Camera location after update: {self.camera.location}")
 
     def set_random_hdri(self):
-        """Set random HDRI for lighting."""
-        if len(self.hdris) == 0:
+        """Set random HDRI for lighting and randomize world settings."""
+        world = bpy.context.scene.world
+        if not world or not world.node_tree:
             return
 
-        hdri = np.random.choice(self.hdris)
-
-        # Set environment texture
-        world = bpy.context.scene.world
-        if world:
+        # If HDRIs are available, randomly select one
+        if len(self.hdris) > 0:
+            hdri = np.random.choice(self.hdris)
             env_node = world.node_tree.nodes.get('Environment Texture')
             if env_node:
                 env_node.image = hdri
+
+        # Always randomize environment rotation for lighting variation
+        mapping_node = world.node_tree.nodes.get('Mapping')
+        if mapping_node:
+            # Random rotation around Z axis (0-360 degrees)
+            rotation_z = np.random.uniform(0, 2 * np.pi)
+            mapping_node.inputs['Rotation'].default_value = (0, 0, rotation_z)
+            logger.debug(f"Environment rotation: {np.degrees(rotation_z):.1f}°")
+
+        # Randomize environment strength (brightness)
+        background_node = world.node_tree.nodes.get('Background')
+        if background_node:
+            # Vary strength between 0.5 and 1.5 (50% to 150% of default)
+            strength = np.random.uniform(0.5, 1.5)
+            background_node.inputs['Strength'].default_value = strength
+            logger.debug(f"Environment strength: {strength:.2f}")
 
     def render_position(self, fen: str, image_index: int) -> dict:
         """
