@@ -1548,8 +1548,8 @@ class VALUEHybridGenerator:
 
         # Point camera at board center
         direction = self.board_center - self.camera.location
-        # Use Y as up vector (correct camera orientation)
-        rot_quat = direction.to_track_quat('-Z', 'Y')
+        # Use Z as up vector (Blender world up)
+        rot_quat = direction.to_track_quat('-Z', 'Z')
         self.camera.rotation_euler = rot_quat.to_euler()
 
         # Random focal length from profile
