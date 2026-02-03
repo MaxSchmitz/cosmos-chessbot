@@ -579,30 +579,31 @@ PIECE_COLLISION_RADII = {
 }
 
 # Camera variation profiles for diverse training data
+# Default uses 'standard' profile (100% weight) matching original settings
 CAMERA_PROFILES = {
+    'standard': {
+        'distance': (1.5, 2.0),        # SO-101 head camera height
+        'theta': (0, 45),              # 0-45° from vertical
+        'focal_length': (30, 50),      # Phone camera simulation
+        'weight': 1.0                  # 100% - default profile
+    },
     'close_detail': {
         'distance': (0.8, 1.2),
         'theta': (15, 35),
         'focal_length': (45, 65),
-        'weight': 0.20
-    },
-    'standard': {
-        'distance': (1.5, 2.0),
-        'theta': (0, 45),
-        'focal_length': (30, 50),
-        'weight': 0.50
+        'weight': 0.0                  # Disabled by default
     },
     'wide_overview': {
         'distance': (2.2, 3.0),
         'theta': (20, 50),
         'focal_length': (25, 35),
-        'weight': 0.20
+        'weight': 0.0                  # Disabled by default
     },
     'low_angle': {
         'distance': (1.2, 1.8),
         'theta': (55, 75),
         'focal_length': (40, 55),
-        'weight': 0.10
+        'weight': 0.0                  # Disabled by default
     },
 }
 
@@ -1515,13 +1516,19 @@ class VALUEHybridGenerator:
         self.place_captured_pieces(piece_usage)
 
     def randomize_camera(self):
-        """Randomize camera position (ChessR-style)."""
-        # Random spherical coordinates around board center
-        theta = np.random.uniform(0, np.radians(45))  # 0-45° from vertical
+        """Randomize camera with profile-based variation."""
+        # Select profile
+        profiles = list(CAMERA_PROFILES.keys())
+        weights = [CAMERA_PROFILES[p]['weight'] for p in profiles]
+        profile_name = np.random.choice(profiles, p=weights)
+        profile = CAMERA_PROFILES[profile_name]
+
+        # Random spherical coordinates from profile
+        theta = np.random.uniform(*[np.radians(x) for x in profile['theta']])
         phi = np.random.uniform(0, 2 * np.pi)  # 360° rotation
 
-        # Camera distance from board (SO-101 head camera height)
-        distance = np.random.uniform(1.5, 2.0)
+        # Camera distance from profile
+        distance = np.random.uniform(*profile['distance'])
 
         # Convert to Cartesian
         x = distance * np.sin(theta) * np.cos(phi)
@@ -1545,8 +1552,10 @@ class VALUEHybridGenerator:
         rot_quat = direction.to_track_quat('-Z', 'Y')
         self.camera.rotation_euler = rot_quat.to_euler()
 
-        # Random focal length (phone camera simulation)
-        self.camera.data.lens = np.random.uniform(30, 50)
+        # Random focal length from profile
+        self.camera.data.lens = np.random.uniform(*profile['focal_length'])
+
+        logger.debug(f"Camera profile: {profile_name}")
 
         # Force scene update to ensure camera changes are applied before rendering
         bpy.context.view_layer.update()

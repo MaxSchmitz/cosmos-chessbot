@@ -5,10 +5,29 @@ render:
   engine: CYCLES
 
 camera:
-  distance_range: [1.5, 2.0]
-  theta_range: [0, 45]  # degrees from vertical
-  phi_range: [0, 360]   # full rotation
-  focal_length_range: [30, 50]
+  # Camera profile settings - adjust weights to enable different camera angles
+  # Default uses 'standard' profile (original settings)
+  profiles:
+    standard:
+      distance: [1.5, 2.0]        # SO-101 head camera height
+      theta: [0, 45]              # degrees from vertical
+      focal_length: [30, 50]      # phone camera simulation
+      weight: 1.0                 # 100% - default profile
+    close_detail:
+      distance: [0.8, 1.2]
+      theta: [15, 35]
+      focal_length: [45, 65]
+      weight: 0.0                 # disabled by default
+    wide_overview:
+      distance: [2.2, 3.0]
+      theta: [20, 50]
+      focal_length: [25, 35]
+      weight: 0.0                 # disabled by default
+    low_angle:
+      distance: [1.2, 1.8]
+      theta: [55, 75]
+      focal_length: [40, 55]
+      weight: 0.0                 # disabled by default
 
 placement:
   neat_grid: 0.25
