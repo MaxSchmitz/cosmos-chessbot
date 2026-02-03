@@ -1807,7 +1807,7 @@ def main():
         fen_source=args.fen_source,
         output_dir=args.output_dir,
         max_positions=args.num_images,
-        hdri_dir=args.hdri_dir if args.hdri_dir.exists() else None,
+        hdri_dir=args.hdri_dir if args.hdri_dir and args.hdri_dir.exists() else None,
     )
 
     annotation_file = generator.generate()
