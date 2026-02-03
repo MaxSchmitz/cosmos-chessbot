@@ -1515,19 +1515,13 @@ class VALUEHybridGenerator:
         self.place_captured_pieces(piece_usage)
 
     def randomize_camera(self):
-        """Randomize camera with profile-based variation."""
-        # Select profile
-        profiles = list(CAMERA_PROFILES.keys())
-        weights = [CAMERA_PROFILES[p]['weight'] for p in profiles]
-        profile_name = np.random.choice(profiles, p=weights)
-        profile = CAMERA_PROFILES[profile_name]
-
-        # Random spherical coordinates from profile
-        theta = np.random.uniform(*[np.radians(x) for x in profile['theta']])
+        """Randomize camera position (ChessR-style)."""
+        # Random spherical coordinates around board center
+        theta = np.random.uniform(0, np.radians(45))  # 0-45° from vertical
         phi = np.random.uniform(0, 2 * np.pi)  # 360° rotation
 
-        # Camera distance from profile
-        distance = np.random.uniform(*profile['distance'])
+        # Camera distance from board (SO-101 head camera height)
+        distance = np.random.uniform(1.5, 2.0)
 
         # Convert to Cartesian
         x = distance * np.sin(theta) * np.cos(phi)
@@ -1551,10 +1545,8 @@ class VALUEHybridGenerator:
         rot_quat = direction.to_track_quat('-Z', 'Y')
         self.camera.rotation_euler = rot_quat.to_euler()
 
-        # Random focal length from profile
-        self.camera.data.lens = np.random.uniform(*profile['focal_length'])
-
-        logger.debug(f"Camera profile: {profile_name}")
+        # Random focal length (phone camera simulation)
+        self.camera.data.lens = np.random.uniform(30, 50)
 
         # Force scene update to ensure camera changes are applied before rendering
         bpy.context.view_layer.update()
