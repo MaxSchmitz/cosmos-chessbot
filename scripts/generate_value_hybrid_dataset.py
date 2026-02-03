@@ -1588,8 +1588,9 @@ class VALUEHybridGenerator:
         # Randomize environment strength (brightness)
         background_node = world.node_tree.nodes.get('Background')
         if background_node:
-            # Vary strength between 0.5 and 1.5 (50% to 150% of default)
-            strength = np.random.uniform(0.5, 1.5)
+            # Vary strength between 0.75 and 1.25 (75% to 125% of default)
+            # Narrower range to avoid under/overexposure
+            strength = np.random.uniform(0.75, 1.25)
             background_node.inputs['Strength'].default_value = strength
             logger.debug(f"Environment strength: {strength:.2f}")
 
