@@ -1,0 +1,32 @@
+render:
+  resolution: 600
+  samples: 256
+  device: CPU  # CPU, GPU, or METAL
+  engine: CYCLES
+
+camera:
+  distance_range: [1.5, 2.0]
+  theta_range: [0, 45]  # degrees from vertical
+  phi_range: [0, 360]   # full rotation
+  focal_length_range: [30, 50]
+
+placement:
+  neat_grid: 0.25
+  scattered: 0.35
+  piled: 0.30
+  hidden: 0.10
+
+collision:
+  # Piece-specific collision radii in meters
+  pawn: 0.020
+  knight: 0.025
+  bishop: 0.027
+  rook: 0.028
+  queen: 0.035
+  king: 0.035
+
+paths:
+  textures_dir: data/textures/floors
+  fen_source: data/value_llava/chess_fen_train.json
+  output_dir: data/chess
+  hdri_dir: null  # or path to HDRI directory
