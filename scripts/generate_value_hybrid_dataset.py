@@ -1575,13 +1575,15 @@ class VALUEHybridGenerator:
             if env_node:
                 env_node.image = hdri
 
-        # Always randomize environment rotation for lighting variation
+        # Always randomize environment rotation for lighting variation (spherical)
         mapping_node = world.node_tree.nodes.get('Mapping')
         if mapping_node:
-            # Random rotation around Z axis (0-360 degrees)
-            rotation_z = np.random.uniform(0, 2 * np.pi)
-            mapping_node.inputs['Rotation'].default_value = (0, 0, rotation_z)
-            logger.debug(f"Environment rotation: {np.degrees(rotation_z):.1f}°")
+            # Random spherical rotation for varied lighting angles
+            rotation_x = np.random.uniform(0, 2 * np.pi)  # Tilt
+            rotation_y = np.random.uniform(0, 2 * np.pi)  # Roll
+            rotation_z = np.random.uniform(0, 2 * np.pi)  # Pan
+            mapping_node.inputs['Rotation'].default_value = (rotation_x, rotation_y, rotation_z)
+            logger.debug(f"Environment rotation: X={np.degrees(rotation_x):.1f}°, Y={np.degrees(rotation_y):.1f}°, Z={np.degrees(rotation_z):.1f}°")
 
         # Randomize environment strength (brightness)
         background_node = world.node_tree.nodes.get('Background')
