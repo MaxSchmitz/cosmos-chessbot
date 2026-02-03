@@ -1550,7 +1550,13 @@ class VALUEHybridGenerator:
         direction = self.board_center - self.camera.location
         # Use Z as up vector (Blender world up)
         rot_quat = direction.to_track_quat('-Z', 'Z')
-        self.camera.rotation_euler = rot_quat.to_euler()
+        camera_euler = rot_quat.to_euler()
+
+        # Add random rotation around view axis to show board from different angles
+        # This rotates the board in frame (e.g., white pieces not always at bottom)
+        camera_euler.z += np.random.uniform(0, 2 * np.pi)
+
+        self.camera.rotation_euler = camera_euler
 
         # Random focal length from profile
         self.camera.data.lens = np.random.uniform(*profile['focal_length'])
