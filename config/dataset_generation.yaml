@@ -48,4 +48,4 @@ paths:
   textures_dir: data/textures/floors
   fen_source: data/value_llava/chess_fen_train.json
   output_dir: data/chess
-  hdri_dir: null  # or path to HDRI directory
+  hdri_dir: data/hdri  # HDRI environment maps for lighting

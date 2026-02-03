@@ -1788,7 +1788,7 @@ def main():
     parser.add_argument(
         "--hdri-dir",
         type=Path,
-        default=None,
+        default=PROJECT_ROOT / "data" / "hdri",
         help="Directory with HDRI files"
     )
     parser.add_argument(
