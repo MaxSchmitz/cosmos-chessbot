@@ -1550,18 +1550,10 @@ class VALUEHybridGenerator:
         direction = self.board_center - self.camera.location
         # Use Z as up vector (Blender world up)
         rot_quat = direction.to_track_quat('-Z', 'Z')
+        self.camera.rotation_euler = rot_quat.to_euler()
 
-        # Add random roll rotation around the camera's view axis (looking direction)
-        # This rotates the board in frame without changing what's in view
-        from mathutils import Quaternion
-        roll_angle = np.random.uniform(0, 2 * np.pi)
-        # Create roll rotation around the view direction (normalized direction vector)
-        view_axis = direction.normalized()
-        roll_quat = Quaternion(view_axis, roll_angle)
-
-        # Combine rotations: apply roll around view axis
-        final_quat = roll_quat @ rot_quat
-        self.camera.rotation_euler = final_quat.to_euler()
+        # Note: Board orientation variation can be handled via data augmentation
+        # during training (random rotations) rather than at render time
 
         # Random focal length from profile
         self.camera.data.lens = np.random.uniform(*profile['focal_length'])
