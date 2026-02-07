@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""Training script for ChessPickPlaceEnv using PPO.
+
+Trains an RL agent with Proximal Policy Optimization to pick and place
+chess pieces using an SO-101 robot arm in Isaac Sim.
+
+Usage (inside Isaac Sim container):
+    # Short training run
+    /isaac-sim/python.sh scripts/train_chess_rl.py --num-steps 10000
+
+    # Full training run
+    /isaac-sim/python.sh scripts/train_chess_rl.py --num-steps 100000
+
+    # With wandb logging
+    /isaac-sim/python.sh scripts/train_chess_rl.py --wandb --project chess-rl
+"""
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+# Add project to path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+# Parse args and launch Isaac Sim via AppLauncher
+from isaaclab.app import AppLauncher
+
+parser = argparse.ArgumentParser(description="Train chess pick-and-place RL agent")
+parser.add_argument("--num-steps", type=int, default=10000, help="Total env steps")
+parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel envs")
+parser.add_argument("--rollout-length", type=int, default=150,
+                    help="Steps per rollout before PPO update")
+parser.add_argument("--ppo-epochs", type=int, default=4,
+                    help="PPO optimization epochs per rollout")
+parser.add_argument("--mini-batch-size", type=int, default=512,
+                    help="Mini-batch size for PPO updates")
+parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
+parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda")
+parser.add_argument("--clip-eps", type=float, default=0.2, help="PPO clip epsilon")
+parser.add_argument("--entropy-coeff", type=float, default=0.001,
+                    help="Entropy bonus coefficient")
+parser.add_argument("--value-coeff", type=float, default=0.5,
+                    help="Value loss coefficient")
+parser.add_argument("--max-grad-norm", type=float, default=0.5,
+                    help="Max gradient norm for clipping")
+parser.add_argument("--checkpoint-dir", type=Path,
+                    default=PROJECT_ROOT / "outputs" / "checkpoints",
+                    help="Checkpoint save directory")
+parser.add_argument("--checkpoint-interval", type=int, default=5000,
+                    help="Steps between checkpoints")
+parser.add_argument("--log-interval", type=int, default=1,
+                    help="Rollouts between log prints (1 = every rollout)")
+parser.add_argument("--early-stop-return", type=float, default=None,
+                    help="Stop training when mean return exceeds this value")
+parser.add_argument("--early-stop-patience", type=int, default=5,
+                    help="Rollouts without improvement before early stopping")
+parser.add_argument("--save-plot", action="store_true", default=True,
+                    help="Save training curve plot to checkpoint dir")
+parser.add_argument("--resume", type=Path, default=None,
+                    help="Path to checkpoint .pt file to resume training from")
+parser.add_argument("--wandb", action="store_true", help="Log to wandb")
+parser.add_argument("--project", type=str, default="cosmos-chess-rl",
+                    help="wandb project name")
+AppLauncher.add_app_launcher_args(parser)
+args = parser.parse_args()
+args.enable_cameras = True  # required for TiledCamera sensors
+
+app_launcher = AppLauncher(args)
+simulation_app = app_launcher.app
+
+# Now import env/torch modules (after SimulationApp init)
+import torch
+import torch.nn as nn
+from torch.distributions import Normal
+
+from cosmos_chessbot.isaac.chess_env import ChessPickPlaceEnv
+from cosmos_chessbot.isaac.chess_env_cfg import ChessPickPlaceEnvCfg
+
+
+class ActorCritic(nn.Module):
+    """Actor-Critic MLP with separate policy (actor) and value (critic) heads."""
+
+    def __init__(self, obs_dim: int, act_dim: int, hidden: int = 256):
+        super().__init__()
+        # Shared feature extractor
+        self.shared = nn.Sequential(
+            nn.Linear(obs_dim, hidden),
+            nn.ELU(),
+            nn.Linear(hidden, hidden),
+            nn.ELU(),
+        )
+        # Policy head: outputs action mean
+        self.actor_mean = nn.Linear(hidden, act_dim)
+        # Learnable log standard deviation (per action dimension)
+        self.actor_log_std = nn.Parameter(torch.zeros(act_dim))
+        # Value head: outputs scalar state value
+        self.critic = nn.Linear(hidden, 1)
+
+    def forward(self, obs: torch.Tensor):
+        features = self.shared(obs)
+        action_mean = self.actor_mean(features)
+        action_std = self.actor_log_std.exp().expand_as(action_mean)
+        value = self.critic(features).squeeze(-1)
+        return action_mean, action_std, value
+
+    def get_action_and_value(self, obs: torch.Tensor):
+        """Sample action from policy and return action, log_prob, value."""
+        action_mean, action_std, value = self(obs)
+        dist = Normal(action_mean, action_std)
+        action = dist.sample()
+        action = action.clamp(-1.0, 1.0)  # clamp to action space
+        log_prob = dist.log_prob(action).sum(dim=-1)
+        return action, log_prob, value
+
+    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
+        """Evaluate given actions: return log_prob, entropy, value."""
+        action_mean, action_std, value = self(obs)
+        dist = Normal(action_mean, action_std)
+        log_prob = dist.log_prob(actions).sum(dim=-1)
+        entropy = dist.entropy().sum(dim=-1)
+        return log_prob, entropy, value
+
+
+class RunningMeanStd:
+    """Tracks running mean and std for observation normalization."""
+
+    def __init__(self, shape, device, epsilon=1e-4):
+        self.mean = torch.zeros(shape, device=device)
+        self.var = torch.ones(shape, device=device)
+        self.count = epsilon
+
+    def update(self, batch: torch.Tensor):
+        """Update running stats with a batch of observations (N, shape) or (T*N, shape)."""
+        batch_mean = batch.mean(dim=0)
+        batch_var = batch.var(dim=0, unbiased=False)
+        batch_count = batch.shape[0]
+
+        delta = batch_mean - self.mean
+        total_count = self.count + batch_count
+        self.mean = self.mean + delta * batch_count / total_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + delta.pow(2) * self.count * batch_count / total_count
+        self.var = m2 / total_count
+        self.count = total_count
+
+    def normalize(self, obs: torch.Tensor) -> torch.Tensor:
+        return (obs - self.mean) / (self.var.sqrt() + 1e-8)
+
+
+def compute_gae(rewards, values, dones, next_value, gamma, gae_lambda):
+    """Compute Generalized Advantage Estimation.
+
+    Args:
+        rewards: (T, N) per-step rewards
+        values: (T, N) per-step value estimates
+        dones: (T, N) episode termination flags
+        next_value: (N,) value estimate for the state after the last step
+        gamma: discount factor
+        gae_lambda: GAE lambda
+
+    Returns:
+        advantages: (T, N)
+        returns: (T, N)
+    """
+    T, N = rewards.shape
+    advantages = torch.zeros_like(rewards)
+    last_gae = torch.zeros(N, device=rewards.device)
+
+    for t in reversed(range(T)):
+        if t == T - 1:
+            next_val = next_value
+        else:
+            next_val = values[t + 1]
+        next_non_terminal = 1.0 - dones[t].float()
+        delta = rewards[t] + gamma * next_val * next_non_terminal - values[t]
+        last_gae = delta + gamma * gae_lambda * next_non_terminal * last_gae
+        advantages[t] = last_gae
+
+    returns = advantages + values
+    return advantages, returns
+
+
+def main():
+    print("=" * 60)
+    print("Chess Pick-and-Place PPO Training")
+    print("=" * 60)
+
+    # -- Setup ---------------------------------------------------------------
+    cfg = ChessPickPlaceEnvCfg()
+    cfg.scene.num_envs = args.num_envs
+    N = args.num_envs
+    T = args.rollout_length
+
+    print(f"\nConfig:")
+    print(f"  num_envs:        {N}")
+    print(f"  action_space:    {cfg.action_space}")
+    print(f"  rl_obs_dim:      {cfg.num_rl_observations}")
+    print(f"  episode_length:  {cfg.episode_length_s}s")
+    print(f"  rollout_length:  {T}")
+    print(f"  ppo_epochs:      {args.ppo_epochs}")
+    print(f"  mini_batch_size: {args.mini_batch_size}")
+    print(f"  lr:              {args.lr}")
+    print(f"  total_steps:     {args.num_steps}")
+
+    # Create environment
+    print("\nCreating environment...")
+    env = ChessPickPlaceEnv(cfg)
+    device = env.device
+
+    # Create actor-critic policy
+    obs_dim = cfg.num_rl_observations
+    act_dim = cfg.action_space
+    policy = ActorCritic(obs_dim, act_dim).to(device)
+    obs_normalizer = RunningMeanStd(obs_dim, device)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
+
+    total_params = sum(p.numel() for p in policy.parameters())
+    print(f"  Policy parameters: {total_params:,}")
+
+    # Resume from checkpoint if specified
+    resume_step = 0
+    resume_episodes = 0
+    resume_returns = []
+    if args.resume:
+        print(f"\n  Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device)
+        policy.load_state_dict(ckpt["policy_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        resume_step = ckpt.get("step", 0)
+        resume_episodes = ckpt.get("episode_count", 0)
+        resume_returns = ckpt.get("ep_returns_history", [])
+        print(f"  Resumed at step {resume_step}, episodes {resume_episodes}")
+
+    # Checkpoint directory
+    args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Wandb
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project=args.project,
+                config={
+                    "num_envs": N,
+                    "num_steps": args.num_steps,
+                    "rollout_length": T,
+                    "ppo_epochs": args.ppo_epochs,
+                    "mini_batch_size": args.mini_batch_size,
+                    "lr": args.lr,
+                    "gamma": args.gamma,
+                    "gae_lambda": args.gae_lambda,
+                    "clip_eps": args.clip_eps,
+                    "entropy_coeff": args.entropy_coeff,
+                    "obs_dim": obs_dim,
+                    "act_dim": act_dim,
+                    "episode_length_s": cfg.episode_length_s,
+                },
+            )
+            print(f"  wandb run: {wandb_run.url}")
+        except ImportError:
+            print("  WARNING: wandb not installed, skipping logging")
+
+    # -- Rollout storage -----------------------------------------------------
+    # Pre-allocate tensors for rollout collection
+    buf_obs = torch.zeros((T, N, obs_dim), device=device)
+    buf_actions = torch.zeros((T, N, act_dim), device=device)
+    buf_log_probs = torch.zeros((T, N), device=device)
+    buf_rewards = torch.zeros((T, N), device=device)
+    buf_dones = torch.zeros((T, N), device=device)
+    buf_values = torch.zeros((T, N), device=device)
+
+    # -- Training loop -------------------------------------------------------
+    print(f"\nStarting PPO training...")
+    obs, info = env.reset()
+
+    global_step = resume_step
+    rollout_count = 0
+    episode_count = resume_episodes
+    episode_return_sum = 0.0
+    episode_return_count = 0
+    ep_returns_history = list(resume_returns)
+    start_time = time.time()
+
+    # For plotting and early stopping
+    plot_steps = []
+    plot_returns = []
+    plot_vloss = []
+    plot_entropy = []
+    best_mean_return = float("-inf")
+    no_improve_count = 0
+
+    # Track per-env episode returns
+    env_ep_return = torch.zeros(N, device=device)
+
+    while global_step < args.num_steps:
+        rollout_count += 1
+
+        # -- Collect rollout -------------------------------------------------
+        policy.eval()
+        for t in range(T):
+            obs_tensor = obs["policy"].get(
+                "rl_obs",
+                torch.zeros((N, obs_dim), device=device),
+            )
+            # Normalize observations
+            obs_normalizer.update(obs_tensor)
+            obs_tensor = obs_normalizer.normalize(obs_tensor)
+
+            with torch.no_grad():
+                action, log_prob, value = policy.get_action_and_value(obs_tensor)
+
+            # Store normalized obs in buffers
+            buf_obs[t] = obs_tensor
+            buf_actions[t] = action
+            buf_log_probs[t] = log_prob
+            buf_values[t] = value
+
+            # Step environment
+            obs, reward, terminated, truncated, info = env.step(action)
+
+            buf_rewards[t] = reward
+            done = terminated | truncated
+            buf_dones[t] = done.float()
+
+            # Track per-env episode returns
+            env_ep_return += reward
+            for i in range(N):
+                if done[i]:
+                    episode_count += 1
+                    ep_ret = env_ep_return[i].item()
+                    ep_returns_history.append(ep_ret)
+                    episode_return_sum += ep_ret
+                    episode_return_count += 1
+                    env_ep_return[i] = 0.0
+
+            global_step += N
+
+        # -- Compute advantages (GAE) ---------------------------------------
+        with torch.no_grad():
+            next_obs_tensor = obs["policy"].get(
+                "rl_obs",
+                torch.zeros((N, obs_dim), device=device),
+            )
+            next_obs_tensor = obs_normalizer.normalize(next_obs_tensor)
+            _, _, next_value = policy(next_obs_tensor)
+
+        advantages, returns = compute_gae(
+            buf_rewards, buf_values, buf_dones,
+            next_value, args.gamma, args.gae_lambda,
+        )
+
+        # Normalize advantages
+        adv_mean = advantages.mean()
+        adv_std = advantages.std() + 1e-8
+        advantages = (advantages - adv_mean) / adv_std
+
+        # -- PPO update ------------------------------------------------------
+        policy.train()
+
+        # Flatten rollout: (T, N, ...) -> (T*N, ...)
+        flat_obs = buf_obs.reshape(-1, obs_dim)
+        flat_actions = buf_actions.reshape(-1, act_dim)
+        flat_log_probs = buf_log_probs.reshape(-1)
+        flat_returns = returns.reshape(-1)
+        flat_advantages = advantages.reshape(-1)
+
+        total_samples = T * N
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy = 0.0
+        n_updates = 0
+
+        for epoch in range(args.ppo_epochs):
+            # Shuffle indices
+            indices = torch.randperm(total_samples, device=device)
+
+            for start in range(0, total_samples, args.mini_batch_size):
+                end = min(start + args.mini_batch_size, total_samples)
+                mb_idx = indices[start:end]
+
+                mb_obs = flat_obs[mb_idx]
+                mb_actions = flat_actions[mb_idx]
+                mb_old_log_probs = flat_log_probs[mb_idx]
+                mb_returns = flat_returns[mb_idx]
+                mb_advantages = flat_advantages[mb_idx]
+
+                # Evaluate actions under current policy
+                new_log_probs, entropy, new_values = policy.evaluate_actions(
+                    mb_obs, mb_actions
+                )
+
+                # Policy loss (clipped surrogate)
+                ratio = (new_log_probs - mb_old_log_probs).exp()
+                surr1 = ratio * mb_advantages
+                surr2 = ratio.clamp(
+                    1.0 - args.clip_eps, 1.0 + args.clip_eps
+                ) * mb_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+
+                # Value loss
+                value_loss = 0.5 * (new_values - mb_returns).pow(2).mean()
+
+                # Entropy bonus
+                entropy_loss = -entropy.mean()
+
+                # Total loss
+                loss = (
+                    policy_loss
+                    + args.value_coeff * value_loss
+                    + args.entropy_coeff * entropy_loss
+                )
+
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                optimizer.step()
+
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+                total_entropy += -entropy_loss.item()
+                n_updates += 1
+
+        avg_policy_loss = total_policy_loss / max(1, n_updates)
+        avg_value_loss = total_value_loss / max(1, n_updates)
+        avg_entropy = total_entropy / max(1, n_updates)
+
+        # -- Logging ---------------------------------------------------------
+        if rollout_count % args.log_interval == 0:
+            elapsed = time.time() - start_time
+            fps = global_step / elapsed
+            mean_ep_return = (
+                sum(ep_returns_history[-20:]) / max(1, len(ep_returns_history[-20:]))
+            )
+
+            print(
+                f"  Step {global_step:>7d}/{args.num_steps} | "
+                f"FPS: {fps:.0f} | "
+                f"Episodes: {episode_count} | "
+                f"Mean return (last 20): {mean_ep_return:>8.2f} | "
+                f"P_loss: {avg_policy_loss:.4f} | "
+                f"V_loss: {avg_value_loss:.4f} | "
+                f"Entropy: {avg_entropy:.4f}"
+            )
+
+            if wandb_run:
+                wandb_run.log(
+                    {
+                        "step": global_step,
+                        "fps": fps,
+                        "episode_count": episode_count,
+                        "mean_episode_return": mean_ep_return,
+                        "policy_loss": avg_policy_loss,
+                        "value_loss": avg_value_loss,
+                        "entropy": avg_entropy,
+                    },
+                    step=global_step,
+                )
+
+        # -- Track for plotting and early stopping ---------------------------
+        plot_steps.append(global_step)
+        plot_returns.append(mean_ep_return if ep_returns_history else 0.0)
+        plot_vloss.append(avg_value_loss)
+        plot_entropy.append(avg_entropy)
+
+        # Early stopping: target return reached
+        if args.early_stop_return is not None:
+            if mean_ep_return >= args.early_stop_return and len(ep_returns_history) >= 20:
+                print(f"\n  Early stop: mean return {mean_ep_return:.2f} >= {args.early_stop_return}")
+                break
+
+        # Early stopping: no improvement for N rollouts
+        if len(ep_returns_history) >= 20:
+            if mean_ep_return > best_mean_return:
+                best_mean_return = mean_ep_return
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+            if args.early_stop_patience and no_improve_count >= args.early_stop_patience:
+                print(f"\n  Early stop: no improvement for {no_improve_count} rollouts "
+                      f"(best: {best_mean_return:.2f})")
+                break
+
+        # -- Checkpointing ---------------------------------------------------
+        if global_step % args.checkpoint_interval < T * N:
+            ckpt_path = args.checkpoint_dir / f"policy_step_{global_step}.pt"
+            torch.save(
+                {
+                    "step": global_step,
+                    "policy_state_dict": policy.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "episode_count": episode_count,
+                    "ep_returns_history": ep_returns_history[-100:],
+                },
+                ckpt_path,
+            )
+            print(f"  Checkpoint saved: {ckpt_path}")
+
+    # -- Save training curve plot --------------------------------------------
+    if args.save_plot and plot_steps:
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+
+            axes[0].plot(plot_steps, plot_returns, "b-", linewidth=1.5)
+            axes[0].set_ylabel("Mean Return (last 20)")
+            axes[0].set_title("Chess Pick-and-Place PPO Training")
+            axes[0].grid(True, alpha=0.3)
+
+            axes[1].plot(plot_steps, plot_vloss, "r-", linewidth=1.5)
+            axes[1].set_ylabel("Value Loss")
+            axes[1].grid(True, alpha=0.3)
+
+            axes[2].plot(plot_steps, plot_entropy, "g-", linewidth=1.5)
+            axes[2].set_ylabel("Entropy")
+            axes[2].set_xlabel("Environment Steps")
+            axes[2].grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            plot_path = args.checkpoint_dir / "training_curve.png"
+            fig.savefig(plot_path, dpi=150)
+            plt.close(fig)
+            print(f"Training curve saved: {plot_path}")
+        except ImportError:
+            print("  matplotlib not installed, skipping plot")
+
+    # -- Final summary -------------------------------------------------------
+    elapsed = time.time() - start_time
+    mean_ep_return = (
+        sum(ep_returns_history[-20:]) / max(1, len(ep_returns_history[-20:]))
+    )
+    print(f"\n{'=' * 60}")
+    print(f"Training complete!")
+    print(f"  Total steps:    {global_step}")
+    print(f"  Total episodes: {episode_count}")
+    print(f"  Mean return (last 20): {mean_ep_return:.2f}")
+    print(f"  Wall time:      {elapsed:.1f}s")
+    print(f"  FPS:            {global_step / elapsed:.0f}")
+    print(f"{'=' * 60}")
+
+    # Save final checkpoint
+    final_path = args.checkpoint_dir / "policy_final.pt"
+    torch.save(
+        {
+            "step": global_step,
+            "policy_state_dict": policy.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "episode_count": episode_count,
+            "ep_returns_history": ep_returns_history[-100:],
+        },
+        final_path,
+    )
+    print(f"Final checkpoint: {final_path}")
+
+    if wandb_run:
+        wandb_run.finish()
+
+    env.close()
+    simulation_app.close()
+
+
+if __name__ == "__main__":
+    main()

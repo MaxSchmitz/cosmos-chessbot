@@ -71,7 +71,8 @@ def create_test_scene(usd_dir: Path):
     # Add ground plane
     print("[1/4] Creating ground plane...")
     ground_prim = stage.DefinePrim("/World/Ground", "Xform")
-    ground_prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(0, 0, -0.5))
+    ground_xform = UsdGeom.Xformable(ground_prim)
+    ground_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, -0.5))
 
     # Add physics scene
     print("[2/4] Adding physics scene...")
@@ -116,16 +117,9 @@ def create_test_scene(usd_dir: Path):
         piece_prim = stage.DefinePrim(prim_path, "Xform")
         piece_prim.GetReferences().AddReference(str(piece_usd))
 
-        # Set position (convert numpy to Gf.Vec3d)
-        translate_attr = piece_prim.CreateAttribute(
-            "xformOp:translate",
-            Sdf.ValueTypeNames.Double3
-        )
-        translate_attr.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
-
-        # Add to xformOpOrder
+        # Set position
         xform = UsdGeom.Xformable(piece_prim)
-        xform.AddTranslateOp()
+        xform.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
 
         print(f"  ✓ {square}: {piece_type:10s} at ({pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f})")
         piece_count += 1
