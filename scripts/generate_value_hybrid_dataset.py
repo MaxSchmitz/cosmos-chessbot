@@ -38,6 +38,8 @@ if user_site not in sys.path:
 # Try to import Blender
 try:
     import bpy
+    import bpy_extras
+    import bpy_extras.object_utils
     import numpy as np
     from mathutils import Vector
     IN_BLENDER = True
@@ -709,7 +711,7 @@ class DatasetConfig:
             # Default configuration if YAML not available or file missing
             self.config = {
                 'render': {
-                    'resolution': 600,
+                    'resolution': 640,
                     'samples': 256,
                     'device': 'CPU',
                     'engine': 'CYCLES'
@@ -1479,6 +1481,115 @@ class VALUEHybridGenerator:
                     placed_positions.append((position, piece_type))
                     logger.debug(f"  Placed {piece_type} at Z={position.z:.4f}m")
 
+    def get_piece_bounding_boxes(self, board_state: dict) -> list:
+        """
+        Calculate 2D bounding boxes for all visible pieces on the board.
+
+        Args:
+            board_state: Dict mapping square names to FEN piece characters
+
+        Returns:
+            List of dicts with piece info and normalized bounding boxes
+        """
+        scene = bpy.context.scene
+        render = scene.render
+        camera = self.camera
+
+        bboxes = []
+
+        # Track which piece objects we've already processed
+        piece_usage = {key: 0 for key in self.available_pieces.keys()}
+
+        for square, fen_piece in board_state.items():
+            piece_type = FEN_TO_PIECE[fen_piece]
+
+            # Get the piece object
+            available = self.available_pieces[piece_type]
+            if piece_usage[piece_type] >= len(available):
+                continue
+
+            obj = available[piece_usage[piece_type]]
+            piece_usage[piece_type] += 1
+
+            # Skip if piece is hidden or has no geometry
+            if obj.hide_render or not obj.data:
+                continue
+
+            try:
+                # Get 3D bounding box corners in world space
+                bbox_corners_local = [Vector(corner) for corner in obj.bound_box]
+                bbox_corners_world = [obj.matrix_world @ corner for corner in bbox_corners_local]
+
+                # Project to camera space
+                render_scale = render.resolution_percentage / 100.0
+                render_width = int(render.resolution_x * render_scale)
+                render_height = int(render.resolution_y * render_scale)
+
+                # Project each corner to 2D screen space
+                coords_2d = []
+                for corner in bbox_corners_world:
+                    # Convert world space to camera view
+                    co_camera = bpy_extras.object_utils.world_to_camera_view(
+                        scene, camera, corner
+                    )
+                    # Convert to pixel coordinates
+                    x_pixel = co_camera.x * render_width
+                    y_pixel = (1.0 - co_camera.y) * render_height  # Flip y-axis
+                    coords_2d.append((x_pixel, y_pixel))
+
+                # Calculate 2D bounding box from projected corners
+                x_coords = [c[0] for c in coords_2d]
+                y_coords = [c[1] for c in coords_2d]
+
+                x_min = max(0, min(x_coords))
+                x_max = min(render_width, max(x_coords))
+                y_min = max(0, min(y_coords))
+                y_max = min(render_height, max(y_coords))
+
+                # Skip invalid bboxes (behind camera or collapsed)
+                if x_max <= x_min or y_max <= y_min:
+                    continue
+
+                # Calculate YOLO format (normalized x_center, y_center, width, height)
+                x_center = (x_min + x_max) / 2 / render_width
+                y_center = (y_min + y_max) / 2 / render_height
+                width = (x_max - x_min) / render_width
+                height = (y_max - y_min) / render_height
+
+                # Determine piece type for class mapping
+                is_white = fen_piece.isupper()
+                piece_name = fen_piece.upper()  # P, N, B, R, Q, K
+
+                # Map to full piece type name
+                piece_type_name_map = {
+                    'P': 'pawn', 'N': 'knight', 'B': 'bishop',
+                    'R': 'rook', 'Q': 'queen', 'K': 'king'
+                }
+                base_piece_name = piece_type_name_map[piece_name]
+                color = 'w' if is_white else 'b'
+                full_piece_type = f"{base_piece_name}_{color}"
+
+                bboxes.append({
+                    "square": square,
+                    "piece_type": full_piece_type,
+                    "bbox": {
+                        "x_center": float(x_center),
+                        "y_center": float(y_center),
+                        "width": float(width),
+                        "height": float(height),
+                        "x_min": float(x_min / render_width),
+                        "y_min": float(y_min / render_height),
+                        "x_max": float(x_max / render_width),
+                        "y_max": float(y_max / render_height),
+                    }
+                })
+
+            except Exception as e:
+                logger.warning(f"Failed to calculate bbox for {piece_type} at {square}: {e}")
+                continue
+
+        return bboxes
+
     def setup_board(self, fen: str):
         """
         Set up board according to FEN position.
@@ -1644,11 +1755,18 @@ class VALUEHybridGenerator:
         # Set up board
         self.setup_board(fen)
 
+        # Get board state for bounding box calculation
+        board_state = self.fen_to_board_state(fen)
+
         # Randomize camera
         self.randomize_camera()
 
         # Set random HDRI lighting
         self.set_random_hdri()
+
+        # Calculate bounding boxes BEFORE rendering (after camera is positioned)
+        # This ensures we have the correct camera view for projection
+        bounding_boxes = self.get_piece_bounding_boxes(board_state)
 
         # Render
         output_path = self.output_dir / f"chess_{image_index:07d}.jpg"
@@ -1670,6 +1788,7 @@ class VALUEHybridGenerator:
             "id": f"value_hybrid_{image_index:07d}",
             "image": str(output_path.absolute()),
             "fen": fen,
+            "bounding_boxes": bounding_boxes,
         }
 
     def load_fen_positions(self) -> list[str]:
@@ -1731,7 +1850,7 @@ class VALUEHybridGenerator:
             fen = fen_positions[idx]
             metadata = self.render_position(fen, idx)
 
-            # Convert to Llava format
+            # Convert to Llava format (with bounding boxes)
             llava_annotation = {
                 "id": metadata["id"],
                 "image": metadata["image"],
@@ -1744,7 +1863,8 @@ class VALUEHybridGenerator:
                         "from": "gpt",
                         "value": metadata["fen"]
                     }
-                ]
+                ],
+                "bounding_boxes": metadata.get("bounding_boxes", [])
             }
 
             annotations.append(llava_annotation)

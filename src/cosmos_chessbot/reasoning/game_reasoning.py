@@ -346,3 +346,293 @@ Reason step-by-step about what you observe, then provide your conclusion in JSON
             confidence=0.0,
             reasoning=response,
         )
+
+    def plan_correction(
+        self,
+        image: Image.Image,
+        expected_fen: str,
+        actual_fen: str,
+        differences: list,
+        max_new_tokens: int = 512,
+        temperature: float = 0.1,
+    ) -> "CorrectionPlan":
+        """Plan how to correct a move that didn't execute as expected.
+
+        Uses Cosmos Reason2 to understand what went wrong physically and
+        how to correct it.
+
+        Args:
+            image: Current egocentric camera view
+            expected_fen: What the board should look like
+            actual_fen: What the board actually looks like
+            differences: List of SquareDifference objects from FEN comparison
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+
+        Returns:
+            CorrectionPlan with reasoning and suggested actions
+        """
+        # Format differences for prompt
+        diff_text = "\n".join([str(d) for d in differences])
+
+        prompt = f"""I tried to execute a chess move but the result is incorrect.
+
+Expected board state (FEN): {expected_fen}
+Actual board state (FEN): {actual_fen}
+
+Differences found:
+{diff_text}
+
+Looking at my egocentric camera view, reason about:
+1. What physically went wrong? (piece slipped, gripper issue, collision, etc.)
+2. Why did the piece end up in the wrong position?
+3. What physical correction is needed to fix this?
+4. Are there any obstacles or risks to making the correction?
+
+Provide your analysis in JSON:
+{{
+    "physical_cause": "description of what went wrong physically",
+    "correction_needed": "description of the correction",
+    "obstacles": ["list any obstacles to correction"],
+    "confidence": 0.0-1.0,
+    "reasoning": "your step-by-step reasoning"
+}}
+"""
+
+        # Create conversation
+        conversation = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            },
+        ]
+
+        # Process and generate
+        inputs = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        # Parse JSON response
+        return self._parse_correction_plan(output_text)
+
+    def reason_about_action(
+        self,
+        image: Image.Image,
+        move_uci: str,
+        from_square: str,
+        to_square: str,
+        max_new_tokens: int = 512,
+        temperature: float = 0.1,
+    ) -> "ActionReasoning":
+        """Reason about how to physically execute a chess move.
+
+        Uses Cosmos Reason2 to plan the physical execution before acting.
+
+        Args:
+            image: Current egocentric camera view
+            move_uci: Move in UCI format (e.g., 'e2e4')
+            from_square: Starting square
+            to_square: Target square
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+
+        Returns:
+            ActionReasoning with obstacles, grasp strategy, and risks
+        """
+        prompt = f"""I need to execute a chess move: {move_uci}
+Pick up the piece from {from_square} and place it on {to_square}.
+
+Looking at my egocentric camera view, reason about:
+1. What obstacles are in the path between {from_square} and {to_square}?
+2. What pieces are adjacent to {from_square} and {to_square}?
+3. What grasp strategy should I use for this piece?
+4. What's the safest trajectory to avoid knocking over other pieces?
+5. Are there any physical risks or challenges I should be aware of?
+
+Provide your analysis in JSON:
+{{
+    "obstacles": ["list obstacles in the path"],
+    "adjacent_pieces": ["pieces near from/to squares"],
+    "grasp_strategy": "how to grasp this piece",
+    "trajectory_advice": "safest path to take",
+    "risks": ["potential issues to watch for"],
+    "confidence": 0.0-1.0,
+    "reasoning": "your step-by-step reasoning"
+}}
+"""
+
+        # Create conversation
+        conversation = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            },
+        ]
+
+        # Process and generate
+        inputs = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        # Parse JSON response
+        return self._parse_action_reasoning(output_text)
+
+    def _parse_correction_plan(self, response: str) -> "CorrectionPlan":
+        """Parse Cosmos response into CorrectionPlan."""
+        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+
+        if json_match:
+            try:
+                data = json.loads(json_match.group(0))
+                return CorrectionPlan(
+                    physical_cause=data.get("physical_cause", ""),
+                    correction_needed=data.get("correction_needed", ""),
+                    obstacles=data.get("obstacles", []),
+                    confidence=float(data.get("confidence", 0.0)),
+                    reasoning=data.get("reasoning", response),
+                )
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
+        # Fallback
+        return CorrectionPlan(
+            physical_cause="Unknown",
+            correction_needed="Unknown",
+            obstacles=[],
+            confidence=0.0,
+            reasoning=response,
+        )
+
+    def _parse_action_reasoning(self, response: str) -> "ActionReasoning":
+        """Parse Cosmos response into ActionReasoning."""
+        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+
+        if json_match:
+            try:
+                data = json.loads(json_match.group(0))
+                return ActionReasoning(
+                    obstacles=data.get("obstacles", []),
+                    adjacent_pieces=data.get("adjacent_pieces", []),
+                    grasp_strategy=data.get("grasp_strategy", ""),
+                    trajectory_advice=data.get("trajectory_advice", ""),
+                    risks=data.get("risks", []),
+                    confidence=float(data.get("confidence", 0.0)),
+                    reasoning=data.get("reasoning", response),
+                )
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
+        # Fallback
+        return ActionReasoning(
+            obstacles=[],
+            adjacent_pieces=[],
+            grasp_strategy="",
+            trajectory_advice="",
+            risks=[],
+            confidence=0.0,
+            reasoning=response,
+        )
+
+
+@dataclass
+class CorrectionPlan:
+    """Plan for correcting a failed move."""
+
+    physical_cause: str
+    """What physically went wrong."""
+
+    correction_needed: str
+    """Description of the correction needed."""
+
+    obstacles: list[str]
+    """Obstacles to making the correction."""
+
+    confidence: float
+    """Confidence in the analysis."""
+
+    reasoning: str
+    """Step-by-step reasoning from Cosmos."""
+
+
+@dataclass
+class ActionReasoning:
+    """Physical reasoning about how to execute an action."""
+
+    obstacles: list[str]
+    """Obstacles in the path."""
+
+    adjacent_pieces: list[str]
+    """Pieces near the from/to squares."""
+
+    grasp_strategy: str
+    """How to grasp the piece."""
+
+    trajectory_advice: str
+    """Safest path to take."""
+
+    risks: list[str]
+    """Potential issues to watch for."""
+
+    confidence: float
+    """Confidence in the analysis."""
+
+    reasoning: str
+    """Step-by-step reasoning from Cosmos."""

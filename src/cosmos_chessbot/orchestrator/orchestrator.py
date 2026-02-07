@@ -6,14 +6,20 @@ from typing import Optional
 
 from ..vision import Camera, CameraConfig, CosmosPerception, BoardState, RemoteCosmosPerception
 from ..stockfish import StockfishEngine
+from ..reasoning import (
+    ChessGameReasoning,
+    compare_fen_states,
+    calculate_expected_fen,
+    generate_correction_move,
+)
 
 
 @dataclass
 class OrchestratorConfig:
     """Configuration for the chess orchestrator."""
 
-    egocentric_camera_id: int = 0
-    wrist_camera_id: int = 1
+    egocentric_camera_id: int = 1
+    wrist_camera_id: int = 0
     stockfish_path: str = "stockfish"
     cosmos_model: str = "nvidia/Cosmos-Reason2-2B"
     cosmos_server_url: Optional[str] = None
@@ -62,6 +68,15 @@ class ChessOrchestrator:
 
         # Initialize Stockfish
         self.engine = StockfishEngine(engine_path=config.stockfish_path)
+
+        # Initialize game reasoning (for pre-action, verification, recovery)
+        if not config.cosmos_server_url:
+            print("Initializing Cosmos game reasoning...")
+            self.game_reasoning = ChessGameReasoning(model_name=config.cosmos_model)
+        else:
+            # For remote Cosmos, we'd need a remote reasoning client (TODO)
+            print("WARNING: Remote game reasoning not yet implemented")
+            self.game_reasoning = None
 
         # Initialize selected policy
         self._init_policy()
@@ -129,31 +144,47 @@ class ChessOrchestrator:
         """
         return self.engine.get_best_move(fen=board_state.fen)
 
-    def compile_intent(self, move: str, board_state: BoardState) -> dict:
+    def compile_intent(self, move: str, board_state: BoardState, image=None) -> dict:
         """Compile symbolic move into physical manipulation intent.
+
+        Uses Cosmos-Reason2 to reason about physical constraints.
 
         Args:
             move: UCI move (e.g., 'e2e4')
             board_state: Current board state
+            image: Current egocentric image (for reasoning)
 
         Returns:
             Intent dictionary with pick/place squares and constraints
-
-        TODO: Use Cosmos-Reason2 to generate constraints and recovery strategies
         """
         # Parse move
         from_square = move[:2]
         to_square = move[2:4]
 
+        # Use Cosmos-Reason2 for pre-action reasoning if available
+        action_reasoning = None
+        if self.game_reasoning and image:
+            print(f"Reasoning about action: {move}")
+            action_reasoning = self.game_reasoning.reason_about_action(
+                image=image,
+                move_uci=move,
+                from_square=from_square,
+                to_square=to_square,
+            )
+            print(f"  Obstacles: {action_reasoning.obstacles}")
+            print(f"  Grasp strategy: {action_reasoning.grasp_strategy}")
+            print(f"  Risks: {action_reasoning.risks}")
+
         return {
             "pick_square": from_square,
             "place_square": to_square,
+            "move_uci": move,
+            "action_reasoning": action_reasoning,
             "constraints": {
                 "approach": "from_above",
                 "clearance": 0.05,  # meters
                 "avoidance": [],  # squares to avoid
             },
-            "recovery_strategy": "retry",
         }
 
     def execute(self, intent: dict) -> bool:
@@ -224,74 +255,201 @@ class ChessOrchestrator:
         # For now, just simulate success
         return False
 
-    def verify(self, expected_fen: str) -> tuple[bool, BoardState]:
-        """Verify board state after action.
+    def verify(self, expected_fen: str, vision_backend="yolo") -> tuple[bool, BoardState, "FENComparison"]:
+        """Verify board state after action using FEN comparison.
 
         Args:
             expected_fen: Expected FEN after move
+            vision_backend: Which vision system to use ("cosmos" or "yolo")
 
         Returns:
-            Tuple of (success, actual_board_state)
+            Tuple of (success, actual_board_state, fen_comparison)
         """
         overhead, _ = self.sense()
-        actual_state = self.perceive(overhead)
 
-        # Simple FEN comparison (can be improved with fuzzy matching)
-        success = actual_state.fen == expected_fen
+        # Extract FEN using selected backend
+        if vision_backend == "cosmos":
+            actual_state = self.perceive(overhead)
+            actual_fen = actual_state.fen
+        else:
+            # TODO: Use YOLO-DINO detector when available
+            actual_state = self.perceive(overhead)
+            actual_fen = actual_state.fen
 
-        return success, actual_state
+        # Compare FENs
+        fen_comparison = compare_fen_states(expected_fen, actual_fen)
 
-    def recover(self, intent: dict, failure_state: BoardState) -> bool:
+        if not fen_comparison.match:
+            print("❌ Verification failed!")
+            print(fen_comparison.summary())
+        else:
+            print("✅ Verification passed!")
+
+        return fen_comparison.match, actual_state, fen_comparison
+
+    def recover(
+        self,
+        intent: dict,
+        expected_fen: str,
+        failure_state: BoardState,
+        fen_comparison: "FENComparison",
+        max_attempts: int = 3,
+    ) -> bool:
         """Attempt to recover from failed execution.
+
+        Uses Cosmos-Reason2 to understand what went wrong and plan correction.
 
         Args:
             intent: Original intent that failed
+            expected_fen: Expected FEN after move
             failure_state: Actual board state after failure
+            fen_comparison: FEN comparison result
+            max_attempts: Maximum correction attempts
 
         Returns:
             True if recovery succeeded
-
-        TODO: Use Cosmos-Reason2 for failure diagnosis and recovery planning
         """
-        print(f"TODO: Recover from failure. State: {failure_state}")
+        print(f"🔧 Attempting recovery...")
+
+        for attempt in range(max_attempts):
+            print(f"  Recovery attempt {attempt + 1}/{max_attempts}")
+
+            # Get current view
+            overhead, _ = self.sense()
+
+            # Use Cosmos to reason about the correction
+            if self.game_reasoning:
+                correction_plan = self.game_reasoning.plan_correction(
+                    image=overhead,
+                    expected_fen=expected_fen,
+                    actual_fen=failure_state.fen,
+                    differences=fen_comparison.differences,
+                )
+                print(f"  Physical cause: {correction_plan.physical_cause}")
+                print(f"  Correction needed: {correction_plan.correction_needed}")
+
+            # Generate correction move
+            correction_move = generate_correction_move(fen_comparison)
+
+            if correction_move is None:
+                print(f"  ❌ Cannot automatically generate correction")
+                print(f"     (Complex case - would need human intervention)")
+                return False
+
+            print(f"  Correction move: {correction_move}")
+
+            # Execute correction
+            correction_intent = {
+                "pick_square": correction_move[:2],
+                "place_square": correction_move[2:4],
+                "move_uci": correction_move,
+                "constraints": {"approach": "from_above", "clearance": 0.05, "avoidance": []},
+            }
+
+            exec_success = self.execute(correction_intent)
+            if not exec_success:
+                print(f"  ❌ Correction execution failed")
+                continue
+
+            # Verify correction
+            verify_success, new_state, new_comparison = self.verify(expected_fen)
+
+            if verify_success:
+                print(f"  ✅ Recovery successful!")
+                return True
+
+            # Update for next attempt
+            failure_state = new_state
+            fen_comparison = new_comparison
+
+        print(f"❌ Recovery failed after {max_attempts} attempts")
         return False
 
+    def execute_move_with_verification(
+        self,
+        move: str,
+        current_fen: str,
+        current_image=None,
+    ) -> bool:
+        """Execute a move with full verification and recovery loop.
+
+        This is the core method demonstrating Cosmos Reason2 integration:
+        1. Pre-action reasoning (obstacles, grasp strategy)
+        2. Action execution
+        3. Post-action verification (FEN comparison)
+        4. Recovery if needed (correction reasoning)
+
+        Args:
+            move: UCI move to execute (e.g., 'e2e4')
+            current_fen: Current board FEN
+            current_image: Current egocentric image
+
+        Returns:
+            True if move succeeded (after corrections if needed)
+        """
+        # 1. Calculate expected FEN after move
+        expected_fen = calculate_expected_fen(current_fen, move)
+        print(f"\n📋 Executing move: {move}")
+        print(f"   Current FEN:  {current_fen}")
+        print(f"   Expected FEN: {expected_fen}")
+
+        # 2. Pre-action reasoning (using Cosmos)
+        board_state = BoardState(
+            fen=current_fen,
+            confidence=1.0,
+            anomalies=[],
+            raw_response="",
+        )
+        intent = self.compile_intent(move, board_state, image=current_image)
+
+        # 3. Execute move
+        print(f"\n🤖 Executing action...")
+        exec_success = self.execute(intent)
+
+        if not exec_success:
+            print(f"❌ Execution failed at robot control level")
+            return False
+
+        # 4. Verify using FEN comparison
+        print(f"\n🔍 Verifying result...")
+        verify_success, actual_state, fen_comparison = self.verify(expected_fen)
+
+        if verify_success:
+            print(f"✅ Move completed successfully!")
+            return True
+
+        # 5. Recover if verification failed
+        print(f"\n🔧 Move verification failed, attempting recovery...")
+        return self.recover(intent, expected_fen, actual_state, fen_comparison)
+
     def run_one_move(self) -> bool:
-        """Execute one complete move cycle.
+        """Execute one complete move cycle with full reasoning loop.
 
         Returns:
             True if move succeeded
         """
         # 1. Sense
+        print("\n" + "=" * 60)
+        print("👁️  SENSING")
+        print("=" * 60)
         overhead, wrist = self.sense()
 
         # 2. Perceive
+        print("\n🧠 PERCEIVING")
         board_state = self.perceive(overhead)
-        print(f"Board state: {board_state.fen}")
-        print(f"Confidence: {board_state.confidence}")
+        print(f"   FEN: {board_state.fen}")
+        print(f"   Confidence: {board_state.confidence:.2%}")
         if board_state.anomalies:
-            print(f"Anomalies: {board_state.anomalies}")
+            print(f"   Anomalies: {board_state.anomalies}")
 
         # 3. Plan
+        print("\n♟️  PLANNING")
         best_move = self.plan(board_state)
-        print(f"Best move: {best_move}")
+        print(f"   Best move: {best_move}")
 
-        # 4. Compile intent
-        intent = self.compile_intent(best_move, board_state)
-
-        # 5. Execute
-        exec_success = self.execute(intent)
-
-        if not exec_success:
-            return False
-
-        # 6. Verify
-        # TODO: Compute expected FEN after move
-        expected_fen = board_state.fen  # Placeholder
-        verify_success, actual_state = self.verify(expected_fen)
-
-        if not verify_success:
-            # 7. Recover
-            return self.recover(intent, actual_state)
-
-        return True
+        # 4. Execute with verification and recovery
+        return self.execute_move_with_verification(
+            move=best_move,
+            current_fen=board_state.fen,
+            current_image=overhead,
+        )

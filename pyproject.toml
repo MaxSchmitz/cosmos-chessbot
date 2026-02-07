@@ -26,11 +26,8 @@ dependencies = [
     "bitsandbytes>=0.41.0",
     "wandb>=0.16.0",
     "tqdm>=4.66.0",
+    "lerobot>=0.3.2",
 ]
-
-# Note: LeRobot has version conflicts with Cosmos (torch<2.8 vs torch>=2.9)
-# Install separately in a dedicated environment for data collection
-# See LEROBOT_GUIDE.md for setup instructions
 
 [project.scripts]
 cosmos-chessbot = "cosmos_chessbot.main:main"
