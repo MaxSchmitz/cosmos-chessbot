@@ -13,48 +13,7 @@ LeRobot (from Hugging Face) provides:
 
 ## Setup
 
-### 1. Create Separate Environment for LeRobot
-
-**Important:** LeRobot has dependency conflicts with Cosmos (torch versions). We use a separate environment for data collection:
-
-```bash
-# Create dedicated LeRobot environment
-python3 -m venv lerobot_env
-source lerobot_env/bin/activate
-
-# Install LeRobot
-pip install lerobot gymnasium opencv-python pillow numpy
-```
-
-**Why separate?**
-- Cosmos requires torch>=2.9.0 (latest for H100 support)
-- LeRobot requires torch<2.8.0 (stable version)
-- Separate environments avoid conflicts
-
-### 2. When to Use Each Environment
-
-**Main environment** (Cosmos + Orchestrator):
-```bash
-# Use for:
-# - Cosmos perception
-# - Stockfish planning
-# - Orchestrator
-uv run python scripts/test_perception.py
-```
-
-**LeRobot environment** (Data collection):
-```bash
-# Activate LeRobot env
-source lerobot_env/bin/activate
-
-# Use for:
-# - Teleoperation recording
-# - Episode visualization
-# - Policy training
-python scripts/collect_episodes.py
-```
-
-### 2. Configure Robot
+### 1. Configure Robot
 
 LeRobot needs to know about your SO-101 setup. Create a robot configuration:
 
