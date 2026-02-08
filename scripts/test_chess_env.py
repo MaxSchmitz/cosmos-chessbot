@@ -40,7 +40,7 @@ simulation_app = app_launcher.app
 import torch
 import numpy as np
 
-from cosmos_chessbot.isaac.chess_env import ChessPickPlaceEnv, MAX_PIECES
+from cosmos_chessbot.isaac.chess_env import ChessPickPlaceEnv, MAX_PIECES, SLOT_PIECE_TYPES
 from cosmos_chessbot.isaac.chess_env_cfg import ChessPickPlaceEnvCfg
 from cosmos_chessbot.isaac.chess_scene_cfg import TABLE_HEIGHT
 
@@ -81,18 +81,59 @@ def main():
     assert rb_api.GetRigidBodyEnabledAttr().Get() is True, "RigidBody not enabled"
     print("  Rigid body API: OK")
 
-    # Check collision sphere
-    col_path = f"{piece_path}/CollisionSphere"
-    col_prim = stage.GetPrimAtPath(col_path)
-    assert col_prim.IsValid(), f"Collision sphere not found at {col_path}"
-    col_api = UsdPhysics.CollisionAPI(col_prim)
-    print(f"  Collision sphere: OK (radius={col_prim.GetAttribute('radius').Get()})")
-
     # Check mass
     mass_api = UsdPhysics.MassAPI(piece_prim)
     mass = mass_api.GetMassAttr().Get()
     assert abs(mass - cfg.piece_mass_kg) < 1e-6, f"Mass mismatch: {mass} != {cfg.piece_mass_kg}"
     print(f"  Mass: {mass}kg OK")
+
+    # Verify Visual child (holds USD reference, separate from physics)
+    visual_path = f"{piece_path}/Visual"
+    visual_prim = stage.GetPrimAtPath(visual_path)
+    assert visual_prim.IsValid(), f"Visual child prim not found at {visual_path}"
+    print("  Visual child prim: OK")
+
+    # Check mesh collision on the actual Mesh prim (not the Visual Xform)
+    # Collision must be on the mesh so PhysX accounts for the +90° X rotation
+    found_collision_mesh = False
+    for child in visual_prim.GetChildren():
+        if child.GetName() in ("env_light", "_materials"):
+            continue
+        for grandchild in child.GetChildren():
+            if grandchild.GetTypeName() == "Mesh":
+                assert grandchild.HasAPI(UsdPhysics.CollisionAPI), \
+                    f"Mesh {grandchild.GetPath()} missing CollisionAPI"
+                assert grandchild.HasAPI(UsdPhysics.MeshCollisionAPI), \
+                    f"Mesh {grandchild.GetPath()} missing MeshCollisionAPI"
+                mc = UsdPhysics.MeshCollisionAPI(grandchild)
+                approx = mc.GetApproximationAttr().Get()
+                assert approx == "convexHull", \
+                    f"Expected convexHull, got {approx}"
+                print(f"  Mesh collision ({grandchild.GetPath()}): OK (approx={approx})")
+                found_collision_mesh = True
+    assert found_collision_mesh, "No mesh prim with CollisionAPI found under Visual"
+
+    # Verify typed pool — different slots have different piece meshes
+    print("\n  Typed pool check:")
+    # piece_0 = pawn_w (slot 0), piece_14 = queen_w, piece_31 = king_b
+    for check_idx, expected_type in [(0, "pawn_w"), (14, "queen_w"), (31, "king_b")]:
+        assert SLOT_PIECE_TYPES[check_idx] == expected_type, (
+            f"Slot {check_idx}: expected {expected_type}, "
+            f"got {SLOT_PIECE_TYPES[check_idx]}"
+        )
+        # Verify the Visual child has a USD reference loaded (has mesh children)
+        check_visual = f"/World/envs/env_0/Pieces/piece_{check_idx}/Visual"
+        check_prim = stage.GetPrimAtPath(check_visual)
+        assert check_prim.IsValid(), f"Visual prim missing at {check_visual}"
+        mesh_children = [
+            c for c in check_prim.GetAllChildren()
+            if c.GetTypeName() == "Mesh"
+              or any(gc.GetTypeName() == "Mesh" for gc in c.GetChildren())
+        ]
+        assert len(mesh_children) > 0, (
+            f"piece_{check_idx} ({expected_type}): no mesh geometry found"
+        )
+        print(f"    piece_{check_idx} = {expected_type}: OK")
 
     # Run episodes and collect target positions
     print(f"\n[3/5] Running {args.episodes} episodes with random actions...")
@@ -173,7 +214,7 @@ def main():
     print(f"  Mean episode length: {sum(episode_lengths) / len(episode_lengths):.1f}")
     print(f"\n  Action space: {cfg.action_space}")
     print(f"  RL obs dim: {cfg.num_rl_observations}")
-    print(f"  Physics: rigid bodies with sphere colliders")
+    print(f"  Physics: rigid bodies (mesh collision)")
     print(f"  Targets: random workspace positions")
     print("=" * 60)
     print("Smoke test PASSED")

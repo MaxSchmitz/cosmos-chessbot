@@ -49,6 +49,9 @@ data/chessboards/*
 *.ckpt
 checkpoints/
 
+# Outputs (training artifacts, eval frames/videos)
+outputs/
+
 # Logs
 *.log
 logs/

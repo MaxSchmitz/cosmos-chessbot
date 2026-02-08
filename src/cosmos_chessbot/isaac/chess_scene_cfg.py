@@ -31,8 +31,9 @@ RL_SQUARE_SIZE: float = 0.035
 
 # Board center offset: shifted forward so robot can reach all squares.
 # Robot shoulder is ~10cm above base; arm reaches ~33cm horizontally.
-# Board center 15cm in front of robot → farthest rank at 15+14=29cm (within reach).
-BOARD_CENTER_OFFSET_Y: float = 0.15
+# Board center 20cm in front of robot → farthest rank at 20+14=34cm (within reach).
+# Near edge at 6cm from robot base (enough clearance).
+BOARD_CENTER_OFFSET_Y: float = 0.20
 
 # Board center is at origin XY + offset, on the table surface
 BOARD_CENTER = (0.0, BOARD_CENTER_OFFSET_Y, TABLE_HEIGHT)
@@ -40,8 +41,9 @@ BOARD_CENTER = (0.0, BOARD_CENTER_OFFSET_Y, TABLE_HEIGHT)
 # Robot base position: at origin XY, on the table surface.
 ROBOT_POS = (0.0, 0.0, TABLE_HEIGHT)
 
-# Overhead camera: looking straight down at the board
-CAMERA_POS = (0.0, BOARD_CENTER_OFFSET_Y, TABLE_HEIGHT + 0.6)
+# Egocentric camera: behind and above robot, looking forward-down at the board
+# Offset relative to robot base (which sits at TABLE_HEIGHT)
+CAMERA_OFFSET = (0.0, -0.65, 0.45)
 
 # --------------------------------------------------------------------------- #
 # Piece physics constants
@@ -91,9 +93,9 @@ class ChessSceneCfg(SingleArmTaskSceneCfg):
     front: TiledCameraCfg = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base/front_camera",
         offset=TiledCameraCfg.OffsetCfg(
-            pos=CAMERA_POS,
-            rot=(0.707107, -0.707107, 0.0, 0.0),  # look straight down
-            convention="opengl",
+            pos=CAMERA_OFFSET,
+            rot=(0.0, 0.0, 0.9239, 0.3827),  # tilt forward-down + Z flip (ROS)
+            convention="ros",
         ),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(

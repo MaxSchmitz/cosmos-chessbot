@@ -55,7 +55,7 @@ parser.add_argument("--log-interval", type=int, default=1,
                     help="Rollouts between log prints (1 = every rollout)")
 parser.add_argument("--early-stop-return", type=float, default=None,
                     help="Stop training when mean return exceeds this value")
-parser.add_argument("--early-stop-patience", type=int, default=5,
+parser.add_argument("--early-stop-patience", type=int, default=15,
                     help="Rollouts without improvement before early stopping")
 parser.add_argument("--save-plot", action="store_true", default=True,
                     help="Save training curve plot to checkpoint dir")
@@ -81,29 +81,46 @@ from cosmos_chessbot.isaac.chess_env_cfg import ChessPickPlaceEnvCfg
 
 
 class ActorCritic(nn.Module):
-    """Actor-Critic MLP with separate policy (actor) and value (critic) heads."""
+    """Actor-Critic with shared trunk and separate heads.
+
+    A small shared feature layer extracts common representations (distances,
+    joint config), then separate actor/critic branches process them
+    independently. The critic gradient is scaled down (0.5x) through the
+    shared trunk so it doesn't distort the actor's features.
+    """
 
     def __init__(self, obs_dim: int, act_dim: int, hidden: int = 256):
         super().__init__()
-        # Shared feature extractor
+        # Shared trunk: one layer for common feature extraction
         self.shared = nn.Sequential(
             nn.Linear(obs_dim, hidden),
             nn.ELU(),
+        )
+        # Actor branch
+        self.actor_branch = nn.Sequential(
             nn.Linear(hidden, hidden),
             nn.ELU(),
         )
-        # Policy head: outputs action mean
         self.actor_mean = nn.Linear(hidden, act_dim)
-        # Learnable log standard deviation (per action dimension)
         self.actor_log_std = nn.Parameter(torch.zeros(act_dim))
-        # Value head: outputs scalar state value
-        self.critic = nn.Linear(hidden, 1)
+
+        # Critic branch
+        self.critic_branch = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.ELU(),
+        )
+        self.critic_head = nn.Linear(hidden, 1)
 
     def forward(self, obs: torch.Tensor):
-        features = self.shared(obs)
-        action_mean = self.actor_mean(features)
+        shared_features = self.shared(obs)
+        # Actor path: full gradient
+        actor_features = self.actor_branch(shared_features)
+        action_mean = self.actor_mean(actor_features)
         action_std = self.actor_log_std.exp().expand_as(action_mean)
-        value = self.critic(features).squeeze(-1)
+        # Critic path: scale gradient through shared trunk by 0.5x
+        critic_input = shared_features + 0.5 * (shared_features.detach() - shared_features)
+        critic_features = self.critic_branch(critic_input)
+        value = self.critic_head(critic_features).squeeze(-1)
         return action_mean, action_std, value
 
     def get_action_and_value(self, obs: torch.Tensor):
@@ -111,7 +128,7 @@ class ActorCritic(nn.Module):
         action_mean, action_std, value = self(obs)
         dist = Normal(action_mean, action_std)
         action = dist.sample()
-        action = action.clamp(-1.0, 1.0)  # clamp to action space
+        action = action.clamp(-1.0, 1.0)
         log_prob = dist.log_prob(action).sum(dim=-1)
         return action, log_prob, value
 
@@ -368,6 +385,7 @@ def main():
         flat_log_probs = buf_log_probs.reshape(-1)
         flat_returns = returns.reshape(-1)
         flat_advantages = advantages.reshape(-1)
+        flat_values = buf_values.reshape(-1)
 
         total_samples = T * N
         total_policy_loss = 0.0
@@ -388,6 +406,7 @@ def main():
                 mb_old_log_probs = flat_log_probs[mb_idx]
                 mb_returns = flat_returns[mb_idx]
                 mb_advantages = flat_advantages[mb_idx]
+                mb_old_values = flat_values[mb_idx]
 
                 # Evaluate actions under current policy
                 new_log_probs, entropy, new_values = policy.evaluate_actions(
@@ -402,8 +421,13 @@ def main():
                 ) * mb_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss
-                value_loss = 0.5 * (new_values - mb_returns).pow(2).mean()
+                # Value loss (clipped to prevent large critic updates)
+                v_clipped = mb_old_values + (new_values - mb_old_values).clamp(
+                    -args.clip_eps, args.clip_eps
+                )
+                vl_unclipped = (new_values - mb_returns).pow(2)
+                vl_clipped = (v_clipped - mb_returns).pow(2)
+                value_loss = 0.5 * torch.max(vl_unclipped, vl_clipped).mean()
 
                 # Entropy bonus
                 entropy_loss = -entropy.mean()
@@ -495,6 +519,11 @@ def main():
                     "optimizer_state_dict": optimizer.state_dict(),
                     "episode_count": episode_count,
                     "ep_returns_history": ep_returns_history[-100:],
+                    "obs_normalizer": {
+                        "mean": obs_normalizer.mean,
+                        "var": obs_normalizer.var,
+                        "count": obs_normalizer.count,
+                    },
                 },
                 ckpt_path,
             )
@@ -554,6 +583,11 @@ def main():
             "optimizer_state_dict": optimizer.state_dict(),
             "episode_count": episode_count,
             "ep_returns_history": ep_returns_history[-100:],
+            "obs_normalizer": {
+                "mean": obs_normalizer.mean,
+                "var": obs_normalizer.var,
+                "count": obs_normalizer.count,
+            },
         },
         final_path,
     )
