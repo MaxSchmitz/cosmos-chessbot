@@ -1590,6 +1590,91 @@ class VALUEHybridGenerator:
 
         return bboxes
 
+    def get_board_corners_2d(self) -> dict:
+        """
+        Calculate 2D positions of the 4 outer board corners.
+
+        Projects the 3D corners of the 8x8 playing area to 2D camera space
+        and sorts them into visual TL/TR/BR/BL order (matching ChessReD2k
+        annotation convention).
+
+        Returns:
+            Dict with keys:
+                - corners: dict with top_left, top_right, bottom_right,
+                  bottom_left (each [x, y] normalized to [0,1])
+                - bbox: dict with x_center, y_center, width, height (normalized)
+        """
+        scene = bpy.context.scene
+        render = scene.render
+        camera = self.camera
+
+        render_scale = render.resolution_percentage / 100.0
+        render_width = int(render.resolution_x * render_scale)
+        render_height = int(render.resolution_y * render_scale)
+
+        sq = self.square_size
+        bc = self.board_center
+
+        # 4 outer corners of the 8x8 grid in 3D world space
+        # These are at the edges of the outermost squares (half a square
+        # beyond the outermost square centers at +-3.5 * sq)
+        corners_3d = [
+            Vector((bc.x - 4 * sq, bc.y + 4 * sq, bc.z)),  # A8-side
+            Vector((bc.x + 4 * sq, bc.y + 4 * sq, bc.z)),  # H8-side
+            Vector((bc.x + 4 * sq, bc.y - 4 * sq, bc.z)),  # H1-side
+            Vector((bc.x - 4 * sq, bc.y - 4 * sq, bc.z)),  # A1-side
+        ]
+
+        # Project to 2D pixel coordinates
+        corners_2d = []
+        for pt3d in corners_3d:
+            co_cam = bpy_extras.object_utils.world_to_camera_view(
+                scene, camera, pt3d
+            )
+            x_px = co_cam.x * render_width
+            y_px = (1.0 - co_cam.y) * render_height  # Flip y-axis
+            corners_2d.append((x_px, y_px))
+
+        # Sort into visual TL/TR/BR/BL based on position in image
+        # 1. Sort by y ascending (top of image first)
+        sorted_by_y = sorted(corners_2d, key=lambda p: p[1])
+        # 2. Top pair sorted by x
+        top_pair = sorted(sorted_by_y[:2], key=lambda p: p[0])
+        # 3. Bottom pair sorted by x
+        bottom_pair = sorted(sorted_by_y[2:], key=lambda p: p[0])
+
+        tl = top_pair[0]
+        tr = top_pair[1]
+        bl = bottom_pair[0]
+        br = bottom_pair[1]
+
+        # Normalize to [0, 1]
+        def norm(pt):
+            return [pt[0] / render_width, pt[1] / render_height]
+
+        tl_n, tr_n, br_n, bl_n = norm(tl), norm(tr), norm(br), norm(bl)
+
+        # Bounding box around all 4 corners (normalized)
+        all_x = [tl_n[0], tr_n[0], br_n[0], bl_n[0]]
+        all_y = [tl_n[1], tr_n[1], br_n[1], bl_n[1]]
+        x_min, x_max = min(all_x), max(all_x)
+        y_min, y_max = min(all_y), max(all_y)
+
+        return {
+            "corners": {
+                "top_left": tl_n,
+                "top_right": tr_n,
+                "bottom_right": br_n,
+                "bottom_left": bl_n,
+            },
+            "bbox": {
+                "x_center": (x_min + x_max) / 2,
+                "y_center": (y_min + y_max) / 2,
+                "width": x_max - x_min,
+                "height": y_max - y_min,
+            },
+        }
+
     def setup_board(self, fen: str):
         """
         Set up board according to FEN position.
@@ -1764,9 +1849,10 @@ class VALUEHybridGenerator:
         # Set random HDRI lighting
         self.set_random_hdri()
 
-        # Calculate bounding boxes BEFORE rendering (after camera is positioned)
-        # This ensures we have the correct camera view for projection
+        # Calculate bounding boxes and board corners BEFORE rendering
+        # (after camera is positioned so projections are correct)
         bounding_boxes = self.get_piece_bounding_boxes(board_state)
+        board_corners = self.get_board_corners_2d()
 
         # Render
         output_path = self.output_dir / f"chess_{image_index:07d}.jpg"
@@ -1789,6 +1875,7 @@ class VALUEHybridGenerator:
             "image": str(output_path.absolute()),
             "fen": fen,
             "bounding_boxes": bounding_boxes,
+            "board_corners": board_corners,
         }
 
     def load_fen_positions(self) -> list[str]:
@@ -1864,7 +1951,8 @@ class VALUEHybridGenerator:
                         "value": metadata["fen"]
                     }
                 ],
-                "bounding_boxes": metadata.get("bounding_boxes", [])
+                "bounding_boxes": metadata.get("bounding_boxes", []),
+                "board_corners": metadata.get("board_corners"),
             }
 
             annotations.append(llava_annotation)
@@ -1889,7 +1977,7 @@ def main():
     """Main entry point."""
 
     # Project root for relative paths
-    PROJECT_ROOT = Path(__file__).parent.parent
+    PROJECT_ROOT = Path(__file__).parent.parent.parent
 
     # Parse arguments (Blender passes args after "--")
     argv = sys.argv
