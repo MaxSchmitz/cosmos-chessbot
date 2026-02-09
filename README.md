@@ -21,6 +21,101 @@ We build a robotic chess system where:
 
 The result is a robot that does not just choose the right move -- it can reason about the physical world, detect failures, and recover when reality disagrees with intention.
 
+## Quick Start
+
+### Prerequisites
+
+You need two machines:
+
+1. **GPU server** -- An NVIDIA GPU (H100 or L40S) to run Cosmos-Reason2 inference. We use [Brev](https://docs.nvidia.com/brev/latest/quick-start.html) with the Isaac Sim container.
+
+2. **Local machine** -- A computer with:
+   - An [SO-101 follower arm](https://github.com/huggingface/lerobot/blob/main/examples/robots/so101_follower/README.md) connected via USB
+   - Two cameras: one overhead/egocentric camera and one wrist/gripper camera
+   - [Stockfish](https://stockfishchess.org/download/) installed
+   - [uv](https://docs.astral.sh/uv/getting-started/installation/) installed
+
+### 1. Set up the GPU server
+
+Log in to your Brev instance running the Isaac Sim container:
+
+```bash
+brev shell isaacsim
+```
+
+Clone the repo and install dependencies:
+
+```bash
+git clone https://github.com/MaxSchmitz/cosmos-chessbot.git
+cd cosmos-chessbot
+pip install uv && uv sync
+```
+
+Log in to Hugging Face (Cosmos-Reason2 is a gated model):
+
+```bash
+uvx huggingface-cli login
+```
+
+Open port 8000 so your local machine can reach the server. In the Brev dashboard, add port 8000 to the instance's open ports, or use SSH tunneling:
+
+```bash
+# Option A: SSH tunnel from your local machine
+ssh -L 8000:localhost:8000 <your-brev-instance>
+
+# Option B: Open port in Brev dashboard, then use the public URL
+```
+
+Start the Cosmos-Reason2 server:
+
+```bash
+uv run python scripts/cosmos_server.py --host 0.0.0.0 --port 8000
+```
+
+Verify it's running:
+
+```bash
+curl http://localhost:8000/health
+```
+
+### 2. Set up the local machine
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already.
+
+Clone the repo and install dependencies:
+
+```bash
+git clone https://github.com/MaxSchmitz/cosmos-chessbot.git
+cd cosmos-chessbot
+uv sync
+```
+
+### 3. Run the system
+
+Single move (robot executes one move, then stops):
+
+```bash
+uv run cosmos-chessbot \
+  --cosmos-server http://<your-brev-server>:8000 \
+  --overhead-camera 0 --wrist-camera 1
+```
+
+Full game as white:
+
+```bash
+uv run cosmos-chessbot \
+  --cosmos-server http://<your-brev-server>:8000 \
+  --game-mode full-game --color white
+```
+
+Full game as black:
+
+```bash
+uv run cosmos-chessbot \
+  --cosmos-server http://<your-brev-server>:8000 \
+  --game-mode full-game --color black --moves 20
+```
+
 ## System Architecture
 
 ```
@@ -261,100 +356,7 @@ cosmos-chessbot/
 └── README.md
 ```
 
-## Quick Start
-
-### Prerequisites
-
-You need two machines:
-
-1. **GPU server** -- An NVIDIA GPU (H100 or L40S) to run Cosmos-Reason2 inference. We use [Brev](https://docs.nvidia.com/brev/latest/quick-start.html) with the Isaac Sim container.
-
-2. **Local machine** -- A computer with:
-   - An [SO-101 follower arm](https://github.com/huggingface/lerobot/blob/main/examples/robots/so101_follower/README.md) connected via USB
-   - Two cameras: one overhead/egocentric camera and one wrist/gripper camera
-   - [Stockfish](https://stockfishchess.org/download/) installed
-   - [uv](https://docs.astral.sh/uv/getting-started/installation/) installed
-
-### 1. Set up the GPU server
-
-Log in to your Brev instance running the Isaac Sim container:
-
-```bash
-brev shell isaacsim
-```
-
-Clone the repo and install dependencies:
-
-```bash
-git clone https://github.com/MaxSchmitz/cosmos-chessbot.git
-cd cosmos-chessbot
-pip install uv && uv sync
-```
-
-Log in to Hugging Face (Cosmos-Reason2 is a gated model):
-
-```bash
-uvx huggingface-cli login
-```
-
-Open port 8000 so your local machine can reach the server. In the Brev dashboard, add port 8000 to the instance's open ports, or use SSH tunneling:
-
-```bash
-# Option A: SSH tunnel from your local machine
-ssh -L 8000:localhost:8000 <your-brev-instance>
-
-# Option B: Open port in Brev dashboard, then use the public URL
-```
-
-Start the Cosmos-Reason2 server:
-
-```bash
-uv run python scripts/cosmos_server.py --host 0.0.0.0 --port 8000
-```
-
-Verify it's running:
-
-```bash
-curl http://localhost:8000/health
-```
-
-### 2. Set up the local machine
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already.
-
-Clone the repo and install dependencies:
-
-```bash
-git clone https://github.com/MaxSchmitz/cosmos-chessbot.git
-cd cosmos-chessbot
-uv sync
-```
-
-### 3. Run the system
-
-Single move (robot executes one move, then stops):
-
-```bash
-uv run cosmos-chessbot \
-  --cosmos-server http://<your-brev-server>:8000 \
-  --overhead-camera 0 --wrist-camera 1
-```
-
-Full game as white:
-
-```bash
-uv run cosmos-chessbot \
-  --cosmos-server http://<your-brev-server>:8000 \
-  --game-mode full-game --color white
-```
-
-Full game as black:
-
-```bash
-uv run cosmos-chessbot \
-  --cosmos-server http://<your-brev-server>:8000 \
-  --game-mode full-game --color black --moves 20
-```
+## Reference
 
 ### Server Endpoints
 
