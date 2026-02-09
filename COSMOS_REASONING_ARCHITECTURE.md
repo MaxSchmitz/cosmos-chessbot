@@ -1,194 +1,263 @@
-# Cosmos Reason2 Chess Robot Architecture
+# Cosmos-Reason2 Embodied Reasoning Architecture
 
 ## Overview
 
-This chess-playing robot demonstrates **Cosmos Reason2's embodied AI reasoning** capabilities for multi-agent robotic systems. Instead of just using vision models for perception, we leverage Cosmos Reason2's key strength: **reasoning about embodied interactions**.
+Cosmos Chessbot uses **Cosmos-Reason2** exclusively for embodied reasoning — not perception. Following the same egocentric reasoning pattern as the [IntBot showcase](https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/inference/reason2/intbot_showcase/inference.html), we frame all prompts from the robot's first-person perspective to leverage Cosmos-Reason2's core strength: understanding multi-agent physical interactions.
+
+Perception (image → FEN) is handled locally by YOLO-DINO, which provides fast, reliable bounding box detection without a GPU server round-trip.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│   Egocentric Camera (Angled View)           │
-│   Simulates robot's perspective             │
-└──────────────────┬──────────────────────────┘
-                   │
-         ┌─────────▼──────────┐
-         │  Cosmos Reason2    │
-         │  GAME REASONING    │◄─── Key Innovation!
-         │  - Whose turn?     │
-         │  - Opponent done?  │
-         │  - What moved?     │
-         │  - Should I act?   │
-         └─────────┬──────────┘
-                   │
-         ┌─────────▼──────────┐
-         │  LiveChess2FEN     │
-         │  (FEN Detection)   │
-         │  Traditional CV    │
-         └─────────┬──────────┘
-                   │
-         ┌─────────▼──────────┐
-         │  Stockfish         │
-         │  (Best Move)       │
-         └─────────┬──────────┘
-                   │
-         ┌─────────▼──────────┐
-         │  Policy Execution  │
-         │  π₀.₅ or Cosmos    │
-         └────────────────────┘
+ Local Machine (SO-101)                    Brev GPU Server (H100)
+ ──────────────────────                    ──────────────────────
+
+ ┌──────────────────────┐                  ┌──────────────────────────┐
+ │ Cameras              │                  │ cosmos_server.py         │
+ │  egocentric + wrist  │                  │  (FastAPI)               │
+ └────────┬─────────────┘                  │                          │
+          │                                │  Cosmos-Reason2-8B       │
+          ▼                                │  ┌────────────────────┐  │
+ ┌──────────────────────┐                  │  │ analyze_game_state │  │
+ │ YOLO-DINO            │                  │  │ detect_move        │  │
+ │ Board segmentation   │                  │  │ reason_about_action│  │
+ │ + piece detection    │                  │  │ plan_correction    │  │
+ │ → FEN                │                  │  └────────────────────┘  │
+ └────────┬─────────────┘                  └────────────▲─────────────┘
+          │                                             │
+          ▼                                        HTTP POST
+ ┌──────────────────────┐                        (images/video
+ │ Stockfish (UCI)      │                         + prompts)
+ │ → best move          │                             │
+ └────────┬─────────────┘                             │
+          │                                           │
+          ▼                                           │
+ ┌──────────────────────┐                             │
+ │ Orchestrator         ├─────────────────────────────┘
+ │  compile_intent()    │  ← action reasoning
+ │  wait_for_opponent() │  ← turn detection
+ │  detect_opponent()   │  ← move detection
+ │  recover()           │  ← correction planning
+ └────────┬─────────────┘
+          │
+          ▼
+ ┌──────────────────────┐
+ │ PPO Policy           │
+ │ (trained in Isaac)   │
+ │ → joint commands     │
+ └────────┬─────────────┘
+          │
+          ▼
+ ┌──────────────────────┐
+ │ SO-101 Robot Arm     │
+ └──────────────────────┘
 ```
 
-## Key Innovation: Embodied Reasoning
+## Why Cosmos-Reason2 for Reasoning (Not Perception)
 
-**What makes this compelling for judging:**
+| Capability | Cosmos-Reason2 | YOLO-DINO |
+|-----------|----------------|-----------|
+| Egocentric social reasoning | Excellent | N/A |
+| Temporal video understanding | Excellent | N/A |
+| Physical cause-effect reasoning | Excellent | N/A |
+| Object detection / bounding boxes | Possible (future) | Excellent |
+| FEN extraction from board | Not trained for this | Reliable via geometry |
+| Latency | ~2-5s (LLM inference) | ~15ms (local) |
 
-### 1. Multi-Agent Interaction
-Cosmos Reason2 understands the **social dynamics** of turn-taking between robot and human:
-- "Is it my turn or my opponent's?"
-- "Is my opponent still moving, or are they done?"
-- "Should I wait or act now?"
+Cosmos-Reason2 excels at understanding **what is happening** in a scene — whose turn it is, what a human is doing, what went wrong physically. YOLO-DINO excels at **what is where** — detecting and locating chess pieces. Using each where it's strongest gives the best overall system.
 
-### 2. Intent Recognition
-Recognizes human intent from egocentric camera:
-- "Is my opponent reaching for a piece?"
-- "Did they finish placing the piece?"
-- "Are they signaling it's my turn?"
+## The Four Reasoning Modes
 
-### 3. Temporal Reasoning
-Understands the **flow of the game over time**:
-- Tracks move sequences
-- Knows when to transition between waiting and acting
-- Reasons about game state changes
+### 1. Turn Detection — `analyze_game_state(video_frames)`
 
-### 4. Robot-Centric Framing
-Uses first-person perspective like the Cosmos Cookbook IntBot example:
-- "The camera view is MY view"
-- "My opponent is closer to me"
-- "Should I make my move now?"
+**Purpose**: Determine whose turn it is by watching egocentric video. This is multi-agent social reasoning — understanding human intent and turn-taking dynamics.
 
-## Example Reasoning Flow
+**Robot-centric prompt** (from `game_reasoning.py`):
 
-**Input:** Video stream from egocentric camera
-
-**Cosmos Reason2 Output:**
 ```
-Let me analyze the chess game from my perspective:
+You are an embodied chess-playing robot with an egocentric camera view.
+The camera view is YOUR view of the chess board and your opponent.
 
-1. I observe my opponent reaching toward the board
-2. They picked up their knight from b8
-3. The knight is moving toward c6
-4. They placed the piece down and removed their hand
-5. Their move is complete
+Watch this video from my egocentric camera and reason about the chess game.
+The camera view is MY view as the robot. I am playing chess against a human opponent.
 
-Since my opponent played Nc6, it is now MY turn.
-I should make my move.
-
-Conclusion: It's my turn. I should act now.
+Analyze the video and answer:
+1. Whose turn is it? (mine or my opponent's)
+2. Is my opponent currently making a move? (reaching for pieces, moving a piece)
+3. Should I make my move now, or should I wait?
 ```
 
-**Robot Action:** Execute best move via policy
+**Input**: `list[PIL.Image]` — 4-8 video frames captured ~0.15s apart
 
-## Technical Implementation
-
-### Game Reasoning (src/cosmos_chessbot/reasoning/)
-
-**ChessGameReasoning class:**
-```python
-game_state = reasoning.analyze_game_state(video_frames)
-# Returns: whose_turn, opponent_moving, should_robot_act
-
-move = reasoning.detect_move(video_frames)
-# Returns: from_square, to_square, piece_type
+**Output**:
+```json
+{
+    "whose_turn": "robot" | "opponent" | "unknown",
+    "opponent_moving": true | false,
+    "should_robot_act": true | false,
+    "reasoning": "I observe the opponent's hand has returned to their side...",
+    "confidence": 0.92
+}
 ```
 
-**Robot-centric prompting:**
-```python
-SYSTEM_PROMPT = """You are an embodied chess-playing robot with an
-egocentric camera view. The camera view is YOUR view of the chess
-board and your opponent."""
+**Used in**: `orchestrator.wait_for_opponent_turn()` — polls this until `should_robot_act=True`
 
-TURN_DETECTION_PROMPT = """Watch this video from my egocentric camera...
+### 2. Move Detection — `detect_move(video_frames)`
+
+**Purpose**: Identify what move the opponent just made. Temporal reasoning about piece movement across frames.
+
+**Robot-centric prompt**:
+
+```
+Watch this video from my egocentric camera. My opponent just made a chess move.
 The camera view is MY view as the robot.
-Whose turn is it? (mine or my opponent's)
-Should I make my move now, or should I wait?"""
+
+Identify what move they made:
+1. Which piece did they move?
+2. Where did it start? (square in algebraic notation like 'e2')
+3. Where did it end? (square in algebraic notation like 'e4')
 ```
 
-### FEN Detection (LiveChess2FEN)
+**Input**: `list[PIL.Image]` — 8 video frames showing the move
 
-Traditional computer vision for reliable board state detection:
-- Proven, robust solution
-- Fast inference
-- No training required
+**Output**:
+```json
+{
+    "move_occurred": true,
+    "from_square": "e7",
+    "to_square": "e5",
+    "piece_type": "pawn",
+    "reasoning": "I observed the opponent's hand move a pawn from e7 to e5...",
+    "confidence": 0.88
+}
+```
 
-### Chess Move Planning (Stockfish)
+**Used in**: `orchestrator.detect_opponent_move()` → pushes detected move to internal `chess.Board`
 
-Standard chess engine for move selection.
+### 3. Action Reasoning — `reason_about_action(image, move_uci, from_square, to_square)`
 
-### Manipulation (Dual-Policy System)
+**Purpose**: Plan physical execution of a chess move. Obstacle avoidance, grasp strategy, trajectory planning.
 
-Choice of π₀.₅ or Cosmos Policy for physical execution:
-- π₀.₅: Vision-language-action model
-- Cosmos Policy: World model with planning
+**Robot-centric prompt**:
 
-## Judging Criteria Alignment
+```
+I need to execute a chess move: e2e4
+Pick up the piece from e2 and place it on e4.
 
-### Quality of Ideas ✓
-**Compelling application of Cosmos Reason for robotics**
-- Shows embodied reasoning (not just vision)
-- Multi-agent interaction (robot + human)
-- Social understanding (turn-taking, intent)
+Looking at my egocentric camera view, reason about:
+1. What obstacles are in the path between e2 and e4?
+2. What pieces are adjacent to e2 and e4?
+3. What grasp strategy should I use for this piece?
+4. What's the safest trajectory to avoid knocking over other pieces?
+5. Are there any physical risks or challenges I should be aware of?
+```
 
-### Technical Implementation ✓
-**High quality, reproducible, well-documented**
-- Clean modular architecture
-- Clear separation of concerns
-- Extensive documentation
-- Easy to follow and evaluate
+**Input**: `PIL.Image` (current egocentric view) + move details
 
-### Design ✓
-**Well thought out and intuitive**
-- Natural interaction flow
-- Robot-centric perspective
-- Elegant orchestrator pattern
+**Output**:
+```json
+{
+    "obstacles": ["pawn on d3", "knight on f3"],
+    "adjacent_pieces": ["pawn on d2", "pawn on f2"],
+    "grasp_strategy": "Top-pinch grasp on pawn, approach from above",
+    "trajectory_advice": "Lift 5cm, arc over knight on f3",
+    "risks": ["Adjacent pieces could be bumped during placement"],
+    "confidence": 0.91
+}
+```
 
-### Impact ✓
-**Moves physical AI field forward**
-- Demonstrates embodied reasoning for robotics
-- Shows multi-agent coordination
-- Practical real-world application
-- Bridges symbolic AI (chess) and physical AI (manipulation)
+**Used in**: `orchestrator.compile_intent()` — informs the physical manipulation plan
 
-## Why This Approach Works
+### 4. Correction Planning — `plan_correction(image, expected_fen, actual_fen, differences)`
 
-### Problem with Previous Approach:
-❌ Using Cosmos Reason2 for FEN perception (hallucination issues)
-❌ Not leveraging Cosmos's core strength (reasoning)
+**Purpose**: Diagnose what went wrong physically after a failed move and plan correction.
 
-### New Approach:
-✅ Use Cosmos Reason2 for what it's designed for: **embodied reasoning**
-✅ Use traditional CV for what it's good at: **reliable perception**
-✅ Showcase Cosmos's unique capabilities: **multi-agent reasoning**
+**Robot-centric prompt**:
 
-## Demonstration Flow
+```
+I tried to execute a chess move but the result is incorrect.
 
-1. **Human makes move** → Camera captures video
-2. **Cosmos reasons** → "My opponent just moved their knight to c6, it's my turn"
-3. **LiveChess2FEN detects** → Current board FEN
-4. **Stockfish plans** → Best response move
-5. **Policy executes** → Robot makes physical move
-6. **Loop continues** → Natural turn-taking
+Expected board state (FEN): rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR
+Actual board state (FEN): rnbqkbnr/pppppppp/8/8/8/4P3/PPPP1PPP/RNBQKBNR
+
+Differences found:
+  e4: expected P, found empty
+  e3: expected empty, found P
+
+Looking at my egocentric camera view, reason about:
+1. What physically went wrong?
+2. Why did the piece end up in the wrong position?
+3. What physical correction is needed to fix this?
+```
+
+**Input**: `PIL.Image` + expected/actual FEN + list of `SquareDifference`
+
+**Output**:
+```json
+{
+    "physical_cause": "Piece slipped during placement — gripper released 2mm too early",
+    "correction_needed": "Re-grasp piece from e3 and place on e4",
+    "obstacles": ["Piece is slightly off-center on wrong square"],
+    "confidence": 0.88,
+    "reasoning": "The piece did not land on the intended square..."
+}
+```
+
+**Used in**: `orchestrator.recover()` — correction reasoning before executing a fix
+
+## Remote Server Endpoints
+
+When running Cosmos-Reason2 on a brev GPU server, the `RemoteChessGameReasoning` client in `reasoning/remote_reasoning.py` mirrors the local `ChessGameReasoning` interface:
+
+| Local Method | Server Endpoint | Request Body |
+|-------------|-----------------|--------------|
+| `analyze_game_state(frames)` | `POST /reason/analyze_game` | `frames_base64: list[str]` |
+| `detect_move(frames)` | `POST /reason/detect_move` | `frames_base64: list[str]` |
+| `reason_about_action(image, ...)` | `POST /reason/action` | `image_base64, move_uci, from_square, to_square` |
+| `plan_correction(image, ...)` | `POST /reason/correction` | `image_base64, expected_fen, actual_fen, differences` |
+
+The orchestrator automatically uses `RemoteChessGameReasoning` when `--cosmos-server` is set, or `ChessGameReasoning` (local) otherwise.
+
+## Full Game Loop Flow
+
+```
+Game starts
+    │
+    ├── Robot is white? ──► Robot moves first
+    │                         │
+    │                         ▼
+    │                    ┌─────────────┐
+    │                    │ sense       │ Camera capture
+    │                    │ perceive    │ YOLO-DINO → FEN
+    │                    │ plan        │ Stockfish → move
+    │                    │ compile     │ Cosmos reasoning (action)
+    │                    │ act         │ PPO policy → robot
+    │                    │ verify      │ FEN comparison
+    │                    │ recover?    │ Cosmos reasoning (correction)
+    │                    └──────┬──────┘
+    │                           │
+    │                           ▼
+    │                    ┌─────────────────────────────┐
+    │                    │ wait_for_opponent_turn()     │
+    │                    │   Cosmos: analyze_game_state │
+    │                    │   (poll until should_act)    │
+    │                    └──────┬──────────────────────┘
+    │                           │
+    │                           ▼
+    │                    ┌─────────────────────────────┐
+    │                    │ detect_opponent_move()       │
+    │                    │   Cosmos: detect_move        │
+    │                    │   Push to internal board     │
+    │                    └──────┬──────────────────────┘
+    │                           │
+    │                           ▼
+    │                    Loop back to robot's turn
+    │
+    └── Robot is black? ──► Wait for opponent first, then same loop
+```
 
 ## References
 
-- [Cosmos Reason2 IntBot Showcase](https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/inference/reason2/intbot_showcase/inference.html) - Embodied reasoning examples
-- [LiveChess2FEN](https://github.com/davidmallasen/LiveChess2FEN) - Reliable FEN detection
-- [LeRobot](https://github.com/huggingface/lerobot) - Robot manipulation policies
-
-## Next Steps
-
-1. ✅ Implement ChessGameReasoning class
-2. ✅ Rename overhead → egocentric camera
-3. ⏳ Integrate LiveChess2FEN for FEN detection
-4. ⏳ Update orchestrator with new reasoning flow
-5. ⏳ Test full system on real robot
-6. ⏳ Record demo video showing embodied reasoning
+- [Cosmos Reason2 IntBot Showcase](https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/inference/reason2/intbot_showcase/inference.html) — Embodied egocentric reasoning examples
+- [Cosmos Cookbook](https://nvidia-cosmos.github.io/cosmos-cookbook/) — Recipes for Cosmos models
+- [NVIDIA Cosmos](https://github.com/NVIDIA/Cosmos) — Physical AI models and tooling

@@ -1,7 +1,7 @@
 [project]
 name = "cosmos-chessbot"
 version = "0.1.0"
-description = "Cosmos-Reason2 + Stockfish + Pi0.5 chess manipulation orchestrator"
+description = "Cosmos-Reason2 + Stockfish + PPO chess manipulation system"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
