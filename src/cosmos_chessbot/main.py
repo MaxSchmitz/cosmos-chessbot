@@ -1,7 +1,6 @@
 """Main entry point for cosmos-chessbot."""
 
 import argparse
-import logging
 from pathlib import Path
 
 from .utils import setup_logging
@@ -93,18 +92,6 @@ def main():
         help="single-move: execute moves one at a time; full-game: full game loop with turn detection",
     )
     parser.add_argument(
-        "--demo",
-        action="store_true",
-        help="Run in demo mode (no hardware required)",
-    )
-    parser.add_argument(
-        "--demo-scenario",
-        type=str,
-        default="normal",
-        choices=["normal", "failure-recovery"],
-        help="Demo scenario to run (default: normal)",
-    )
-    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose (DEBUG) logging",
@@ -119,16 +106,10 @@ def main():
 
     setup_logging(verbose=args.verbose, quiet=args.quiet)
 
-    # Demo mode — no hardware required
-    if args.demo:
-        from .demo import run_demo
-        run_demo(scenario=args.demo_scenario, max_moves=args.moves)
-        return
-
     from .orchestrator import ChessOrchestrator, OrchestratorConfig
 
     config = OrchestratorConfig(
-        egocentric_camera_id=args.egocentric_camera,
+        egocentric_camera_id=args.overhead_camera,
         wrist_camera_id=args.wrist_camera,
         stockfish_path=args.stockfish,
         cosmos_model=args.model,
@@ -141,7 +122,7 @@ def main():
     )
 
     print("Initializing Cosmos Chessbot...")
-    print(f"  Egocentric camera: {args.egocentric_camera}")
+    print(f"  Overhead camera: {args.overhead_camera}")
     print(f"  Wrist camera: {args.wrist_camera}")
     print(f"  Stockfish: {args.stockfish}")
     print(f"  Perception model: {args.model}")
