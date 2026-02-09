@@ -9,11 +9,16 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 import json
+import logging
 import re
 
 from PIL import Image
 import torch
 import transformers
+
+from ..utils import extract_json
+
+logger = logging.getLogger(__name__)
 
 
 class Turn(Enum):
@@ -283,12 +288,10 @@ Reason step-by-step about what you observe, then provide your conclusion in JSON
         Returns:
             Parsed GameState
         """
-        # Try to extract JSON from response
-        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+        data = extract_json(response)
 
-        if json_match:
+        if data is not None:
             try:
-                data = json.loads(json_match.group(0))
 
                 # Parse whose turn
                 turn_str = data.get("whose_turn", "unknown").lower()
@@ -324,11 +327,10 @@ Reason step-by-step about what you observe, then provide your conclusion in JSON
         Returns:
             Parsed MoveDetection
         """
-        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+        data = extract_json(response)
 
-        if json_match:
+        if data is not None:
             try:
-                data = json.loads(json_match.group(0))
                 return MoveDetection(
                     move_occurred=data.get("move_occurred", False),
                     from_square=data.get("from_square"),
@@ -537,11 +539,10 @@ Provide your analysis in JSON:
 
     def _parse_correction_plan(self, response: str) -> "CorrectionPlan":
         """Parse Cosmos response into CorrectionPlan."""
-        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+        data = extract_json(response)
 
-        if json_match:
+        if data is not None:
             try:
-                data = json.loads(json_match.group(0))
                 return CorrectionPlan(
                     physical_cause=data.get("physical_cause", ""),
                     correction_needed=data.get("correction_needed", ""),
@@ -563,11 +564,10 @@ Provide your analysis in JSON:
 
     def _parse_action_reasoning(self, response: str) -> "ActionReasoning":
         """Parse Cosmos response into ActionReasoning."""
-        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+        data = extract_json(response)
 
-        if json_match:
+        if data is not None:
             try:
-                data = json.loads(json_match.group(0))
                 return ActionReasoning(
                     obstacles=data.get("obstacles", []),
                     adjacent_pieces=data.get("adjacent_pieces", []),

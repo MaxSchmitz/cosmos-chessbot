@@ -1,9 +1,10 @@
 """Main entry point for cosmos-chessbot."""
 
 import argparse
+import logging
 from pathlib import Path
 
-from .orchestrator import ChessOrchestrator, OrchestratorConfig
+from .utils import setup_logging
 
 
 def main():
@@ -77,8 +78,54 @@ def main():
         action="store_false",
         help="Disable planning for Cosmos Policy",
     )
+    parser.add_argument(
+        "--color",
+        type=str,
+        default="white",
+        choices=["white", "black"],
+        help="Color the robot plays as (default: white)",
+    )
+    parser.add_argument(
+        "--game-mode",
+        type=str,
+        default="single-move",
+        choices=["single-move", "full-game"],
+        help="single-move: execute moves one at a time; full-game: full game loop with turn detection",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run in demo mode (no hardware required)",
+    )
+    parser.add_argument(
+        "--demo-scenario",
+        type=str,
+        default="normal",
+        choices=["normal", "failure-recovery"],
+        help="Demo scenario to run (default: normal)",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose (DEBUG) logging",
+    )
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Quiet mode (WARNING+ only)",
+    )
 
     args = parser.parse_args()
+
+    setup_logging(verbose=args.verbose, quiet=args.quiet)
+
+    # Demo mode — no hardware required
+    if args.demo:
+        from .demo import run_demo
+        run_demo(scenario=args.demo_scenario, max_moves=args.moves)
+        return
+
+    from .orchestrator import ChessOrchestrator, OrchestratorConfig
 
     config = OrchestratorConfig(
         egocentric_camera_id=args.egocentric_camera,
@@ -90,6 +137,7 @@ def main():
         policy_type=args.policy,
         policy_checkpoint=args.policy_checkpoint,
         enable_planning=args.enable_planning,
+        color=args.color,
     )
 
     print("Initializing Cosmos Chessbot...")
@@ -98,6 +146,8 @@ def main():
     print(f"  Stockfish: {args.stockfish}")
     print(f"  Perception model: {args.model}")
     print(f"  Policy: {args.policy}")
+    print(f"  Color: {args.color}")
+    print(f"  Game mode: {args.game_mode}")
     if args.policy_checkpoint:
         print(f"  Policy checkpoint: {args.policy_checkpoint}")
     if args.policy == "cosmos":
@@ -105,23 +155,26 @@ def main():
     print()
 
     with ChessOrchestrator(config) as orchestrator:
-        move_count = 0
-        max_moves = args.moves or float('inf')
+        if args.game_mode == "full-game":
+            orchestrator.run_game(max_moves=args.moves)
+        else:
+            move_count = 0
+            max_moves = args.moves or float('inf')
 
-        while move_count < max_moves:
-            print(f"\n{'='*60}")
-            print(f"Move {move_count + 1}")
-            print('='*60)
+            while move_count < max_moves:
+                print(f"\n{'='*60}")
+                print(f"Move {move_count + 1}")
+                print('='*60)
 
-            success = orchestrator.run_one_move()
+                success = orchestrator.run_one_move()
 
-            if not success:
-                print("Move failed. Stopping.")
-                break
+                if not success:
+                    print("Move failed. Stopping.")
+                    break
 
-            move_count += 1
+                move_count += 1
 
-        print(f"\nCompleted {move_count} moves")
+            print(f"\nCompleted {move_count} moves")
 
 
 if __name__ == "__main__":

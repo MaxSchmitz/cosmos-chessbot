@@ -1,3 +1,8 @@
-"""Policy module: π₀.₅ vision-language-action policy interface."""
+"""Manipulation policy interfaces for chess piece pick-and-place."""
 
-# TODO: Implement π₀.₅ integration
+from .base_policy import BasePolicy, PolicyAction
+
+__all__ = [
+    "BasePolicy",
+    "PolicyAction",
+]

@@ -1,11 +1,10 @@
-"""Vision module: camera capture, FEN detection, and Cosmos reasoning."""
+"""Vision module: camera capture and FEN detection."""
 
 from .camera import Camera, CameraConfig
 from .perception import CosmosPerception, BoardState
 from .remote_perception import RemoteCosmosPerception
 from .board_segmentation import BoardSegmentation
 from .fen_detection import FENDetector, ChessPiece
-from .fenify_detector import FenifyDetector
 from .llm_fen_detector import LLMFenDetector
 
 __all__ = [
@@ -17,6 +16,5 @@ __all__ = [
     "BoardSegmentation",
     "FENDetector",
     "ChessPiece",
-    "FenifyDetector",
     "LLMFenDetector",
 ]

@@ -9,6 +9,8 @@ import torch
 import transformers
 from PIL import Image
 
+from ..utils import extract_json
+
 
 @dataclass
 class BoardState:
@@ -160,11 +162,10 @@ Pieces: K/Q/R/B/N/P (white), k/q/r/b/n/p (black), numbers (empty squares), / (ra
             Parsed BoardState
         """
         # Try to extract JSON from response
-        json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+        data = extract_json(response)
 
-        if json_match:
+        if data is not None:
             try:
-                data = json.loads(json_match.group(0))
                 return BoardState(
                     fen=data.get("fen", ""),
                     confidence=float(data.get("confidence", 0.0)),

@@ -1,17 +1,40 @@
 """Main control loop orchestrator."""
 
-from dataclasses import dataclass
+import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+import chess
 
 from ..vision import Camera, CameraConfig, CosmosPerception, BoardState, RemoteCosmosPerception
 from ..stockfish import StockfishEngine
 from ..reasoning import (
     ChessGameReasoning,
+    GameState,
+    MoveDetection,
     compare_fen_states,
     calculate_expected_fen,
     generate_correction_move,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class GamePhase(Enum):
+    """Phases of the full game loop."""
+    WAIT_FOR_OPPONENT = "wait_for_opponent"
+    DETECT_OPPONENT_MOVE = "detect_opponent_move"
+    ROBOT_SENSE = "robot_sense"
+    ROBOT_PERCEIVE = "robot_perceive"
+    ROBOT_PLAN = "robot_plan"
+    ROBOT_COMPILE = "robot_compile"
+    ROBOT_ACT = "robot_act"
+    ROBOT_VERIFY = "robot_verify"
+    ROBOT_RECOVER = "robot_recover"
+    GAME_OVER = "game_over"
 
 
 @dataclass
@@ -33,6 +56,9 @@ class OrchestratorConfig:
     """Path to policy checkpoint (None uses base model)"""
     enable_planning: bool = True
     """Enable planning for Cosmos Policy (ignored for π₀.₅)"""
+
+    color: str = "white"
+    """Robot plays as 'white' or 'black'."""
 
 
 class ChessOrchestrator:
@@ -60,23 +86,26 @@ class ChessOrchestrator:
 
         # Initialize Cosmos perception (local or remote)
         if config.cosmos_server_url:
-            print(f"Using remote Cosmos server at {config.cosmos_server_url}")
+            logger.info("Using remote Cosmos server at %s", config.cosmos_server_url)
             self.perception = RemoteCosmosPerception(server_url=config.cosmos_server_url)
         else:
-            print(f"Using local Cosmos model: {config.cosmos_model}")
+            logger.info("Using local Cosmos model: %s", config.cosmos_model)
             self.perception = CosmosPerception(model_name=config.cosmos_model)
 
         # Initialize Stockfish
         self.engine = StockfishEngine(engine_path=config.stockfish_path)
 
         # Initialize game reasoning (for pre-action, verification, recovery)
-        if not config.cosmos_server_url:
-            print("Initializing Cosmos game reasoning...")
-            self.game_reasoning = ChessGameReasoning(model_name=config.cosmos_model)
+        if config.cosmos_server_url:
+            from ..reasoning.remote_reasoning import RemoteChessGameReasoning
+            logger.info("Using remote Cosmos game reasoning at %s", config.cosmos_server_url)
+            self.game_reasoning = RemoteChessGameReasoning(server_url=config.cosmos_server_url)
         else:
-            # For remote Cosmos, we'd need a remote reasoning client (TODO)
-            print("WARNING: Remote game reasoning not yet implemented")
-            self.game_reasoning = None
+            logger.info("Initializing local Cosmos game reasoning...")
+            self.game_reasoning = ChessGameReasoning(model_name=config.cosmos_model)
+
+        # Internal board for tracking game state
+        self.board = chess.Board()
 
         # Initialize selected policy
         self._init_policy()
@@ -430,12 +459,12 @@ class ChessOrchestrator:
         """
         # 1. Sense
         print("\n" + "=" * 60)
-        print("👁️  SENSING")
+        print("SENSING")
         print("=" * 60)
         overhead, wrist = self.sense()
 
         # 2. Perceive
-        print("\n🧠 PERCEIVING")
+        print("\nPERCEIVING")
         board_state = self.perceive(overhead)
         print(f"   FEN: {board_state.fen}")
         print(f"   Confidence: {board_state.confidence:.2%}")
@@ -443,13 +472,179 @@ class ChessOrchestrator:
             print(f"   Anomalies: {board_state.anomalies}")
 
         # 3. Plan
-        print("\n♟️  PLANNING")
+        print("\nPLANNING")
         best_move = self.plan(board_state)
         print(f"   Best move: {best_move}")
 
         # 4. Execute with verification and recovery
-        return self.execute_move_with_verification(
+        success = self.execute_move_with_verification(
             move=best_move,
             current_fen=board_state.fen,
             current_image=overhead,
         )
+
+        # 5. Track on internal board if successful
+        if success:
+            try:
+                self.board.push(chess.Move.from_uci(best_move))
+            except (chess.InvalidMoveError, chess.IllegalMoveError):
+                logger.warning("Could not push move %s to internal board", best_move)
+
+        return success
+
+    def capture_video_frames(self, n_frames: int = 8, interval: float = 0.2) -> list:
+        """Capture a sequence of frames for video-based reasoning.
+
+        Args:
+            n_frames: Number of frames to capture
+            interval: Time between frames in seconds
+
+        Returns:
+            List of PIL Images
+        """
+        frames = []
+        for _ in range(n_frames):
+            overhead, _ = self.sense()
+            frames.append(overhead)
+            time.sleep(interval)
+        return frames
+
+    def wait_for_opponent_turn(
+        self,
+        poll_interval: float = 1.0,
+        timeout: float = 300.0,
+    ) -> GameState:
+        """Wait for the opponent to complete their turn using Cosmos video reasoning.
+
+        Polls ``analyze_game_state()`` on captured video frames until
+        ``should_robot_act`` is True.
+
+        Args:
+            poll_interval: Seconds between polls
+            timeout: Maximum wait time in seconds
+
+        Returns:
+            GameState indicating the robot should act
+        """
+        print("\nWaiting for opponent's turn...")
+        t0 = time.time()
+
+        while time.time() - t0 < timeout:
+            frames = self.capture_video_frames(n_frames=4, interval=0.15)
+            game_state = self.game_reasoning.analyze_game_state(frames)
+
+            print(f"  Turn: {game_state.whose_turn.value}, "
+                  f"opponent_moving: {game_state.opponent_moving}, "
+                  f"confidence: {game_state.confidence:.2f}")
+
+            if game_state.should_robot_act:
+                print("Opponent's turn complete — robot should act now.")
+                return game_state
+
+            time.sleep(poll_interval)
+
+        # Timeout — return a fallback state
+        logger.warning("Timeout waiting for opponent turn")
+        from ..reasoning import GameState as GS
+        from ..reasoning.game_reasoning import Turn
+        return GS(
+            whose_turn=Turn.UNKNOWN,
+            opponent_moving=False,
+            should_robot_act=True,
+            reasoning="Timeout waiting for opponent",
+            confidence=0.0,
+        )
+
+    def detect_opponent_move(self) -> MoveDetection:
+        """Detect what move the opponent just made using Cosmos video reasoning.
+
+        Returns:
+            MoveDetection with from/to squares and piece type
+        """
+        print("\nDetecting opponent's move...")
+        frames = self.capture_video_frames(n_frames=8, interval=0.2)
+        detection = self.game_reasoning.detect_move(frames)
+
+        if detection.move_occurred:
+            print(f"  Detected: {detection.from_square} -> {detection.to_square} "
+                  f"({detection.piece_type}), confidence: {detection.confidence:.2f}")
+        else:
+            print(f"  No move detected (confidence: {detection.confidence:.2f})")
+
+        return detection
+
+    def run_game(self, max_moves: Optional[int] = None) -> None:
+        """Run a full game loop with turn detection and opponent move detection.
+
+        This is the main game loop that demonstrates Cosmos Reason2's
+        temporal video reasoning for multi-agent physical interaction:
+
+        1. Wait for opponent's turn (video-based turn detection)
+        2. Detect opponent's move (video-based move detection)
+        3. Robot's turn: sense -> perceive -> plan -> compile -> act -> verify
+
+        Args:
+            max_moves: Maximum number of robot moves (None = play until game end)
+        """
+        robot_is_white = self.config.color == "white"
+        move_count = 0
+        limit = max_moves if max_moves is not None else float("inf")
+
+        print("\n" + "=" * 60)
+        print(f"STARTING FULL GAME  (robot plays {'white' if robot_is_white else 'black'})")
+        print("=" * 60)
+
+        while not self.board.is_game_over() and move_count < limit:
+            robot_to_move = (self.board.turn == chess.WHITE) == robot_is_white
+
+            if not robot_to_move:
+                # --- Opponent's turn ---
+                phase = GamePhase.WAIT_FOR_OPPONENT
+                print(f"\n{'='*60}")
+                print(f"[Move {self.board.fullmove_number}] OPPONENT'S TURN")
+                print(f"{'='*60}")
+
+                self.wait_for_opponent_turn()
+
+                phase = GamePhase.DETECT_OPPONENT_MOVE
+                detection = self.detect_opponent_move()
+
+                if detection.move_occurred and detection.from_square and detection.to_square:
+                    uci = f"{detection.from_square}{detection.to_square}"
+                    try:
+                        move = chess.Move.from_uci(uci)
+                        if move in self.board.legal_moves:
+                            self.board.push(move)
+                            print(f"  Pushed opponent move: {uci}")
+                        else:
+                            logger.warning("Detected move %s is illegal, skipping push", uci)
+                    except (chess.InvalidMoveError, ValueError):
+                        logger.warning("Could not parse detected move: %s", uci)
+                else:
+                    logger.warning("Could not detect opponent move — relying on perception")
+
+            else:
+                # --- Robot's turn ---
+                print(f"\n{'='*60}")
+                print(f"[Move {self.board.fullmove_number}] ROBOT'S TURN")
+                print(f"{'='*60}")
+
+                success = self.run_one_move()
+                move_count += 1
+
+                if not success:
+                    print("Robot move failed. Stopping game.")
+                    break
+
+        # Game ended
+        if self.board.is_game_over():
+            result = self.board.result()
+            print(f"\nGAME OVER: {result}")
+            if self.board.is_checkmate():
+                print("Checkmate!")
+            elif self.board.is_stalemate():
+                print("Stalemate!")
+            elif self.board.is_insufficient_material():
+                print("Draw by insufficient material.")
+        else:
+            print(f"\nGame stopped after {move_count} robot moves.")
