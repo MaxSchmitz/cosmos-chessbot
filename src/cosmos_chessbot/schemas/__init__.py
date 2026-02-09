@@ -98,6 +98,59 @@ class CorrectionResponse(BaseModel):
     reasoning: str
 
 
+# ---------------------------------------------------------------------------
+# Trajectory Planning (Action CoT)
+# ---------------------------------------------------------------------------
+
+class TrajectoryRequest(BaseModel):
+    """Request for trajectory planning via Action CoT."""
+    image_base64: str
+    move_uci: str
+    from_square: str
+    to_square: str
+    piece_type: str = "piece"
+    max_new_tokens: int = 1024
+    temperature: float = 0.1
+
+
+class TrajectoryWaypointResponse(BaseModel):
+    """A single waypoint in a trajectory."""
+    point_2d: list[int]
+    label: str
+
+
+class TrajectoryPlanResponse(BaseModel):
+    """Response from trajectory planning."""
+    waypoints: list[TrajectoryWaypointResponse]
+    move_uci: str
+    reasoning: str
+    confidence: float
+
+
+# ---------------------------------------------------------------------------
+# Goal Verification
+# ---------------------------------------------------------------------------
+
+class GoalVerificationRequest(BaseModel):
+    """Request for post-action goal verification."""
+    image_base64: str
+    move_uci: str
+    from_square: str
+    to_square: str
+    piece_type: str = "piece"
+    max_new_tokens: int = 512
+    temperature: float = 0.1
+
+
+class GoalVerificationResponse(BaseModel):
+    """Response from goal verification."""
+    success: bool
+    reason: str
+    physical_issues: list[str]
+    confidence: float
+    reasoning: str
+
+
 __all__ = [
     "PerceptionRequest",
     "PerceptionResponse",
@@ -108,4 +161,9 @@ __all__ = [
     "MoveDetectionResponse",
     "CorrectionRequest",
     "CorrectionResponse",
+    "TrajectoryRequest",
+    "TrajectoryWaypointResponse",
+    "TrajectoryPlanResponse",
+    "GoalVerificationRequest",
+    "GoalVerificationResponse",
 ]

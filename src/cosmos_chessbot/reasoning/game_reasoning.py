@@ -125,6 +125,50 @@ Reason step-by-step about what you observe, then provide your conclusion in JSON
 }
 """
 
+    TRAJECTORY_PLAN_PROMPT = """I need to execute a chess move: {move_uci}
+Pick up the {piece_type} from {from_square} and place it on {to_square}.
+
+Looking at my egocentric camera view, specify the 2D trajectory my gripper should follow in normalized pixel coordinates (0-1000 range, where (0,0) is the top-left corner and (1000,1000) is the bottom-right).
+
+Plan waypoints for:
+1. Position above the source square ({from_square}) for approach
+2. Lower to grasp the piece on {from_square}
+3. Lift the piece to safe clearance height
+4. Move to position above the target square ({to_square}), avoiding any obstacles
+5. Lower to place the piece on {to_square}
+
+If there are pieces between {from_square} and {to_square} that require an arcing trajectory, add intermediate waypoints to avoid them.
+
+Provide your trajectory as a JSON object:
+{{
+    "waypoints": [
+        {{"point_2d": [x, y], "label": "description of this waypoint"}}
+    ],
+    "reasoning": "your step-by-step reasoning about obstacle avoidance and trajectory",
+    "confidence": 0.0-1.0
+}}
+"""
+
+    GOAL_VERIFICATION_PROMPT = """I just attempted to execute a chess move: {move_uci}
+I picked up the {piece_type} from {from_square} and tried to place it on {to_square}.
+
+Looking at my egocentric camera view of the board AFTER the move attempt, verify:
+1. Is the piece correctly placed on {to_square}?
+2. Is the piece stable and upright (not leaning or tipped)?
+3. Were any adjacent pieces bumped or displaced?
+4. Did the gripper fully release the piece?
+5. Are there any other physical issues visible?
+
+Provide your verification in JSON:
+{{
+    "success": true or false,
+    "reason": "brief explanation of the result",
+    "physical_issues": ["list of physical issues detected, empty if none"],
+    "confidence": 0.0-1.0,
+    "reasoning": "your step-by-step reasoning about the physical outcome"
+}}
+"""
+
     def __init__(
         self,
         model_name: str = "nvidia/Cosmos-Reason2-8B",
@@ -591,6 +635,213 @@ Provide your analysis in JSON:
             reasoning=response,
         )
 
+    def plan_trajectory(
+        self,
+        image: Image.Image,
+        move_uci: str,
+        from_square: str,
+        to_square: str,
+        piece_type: str = "piece",
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+    ) -> "TrajectoryPlan":
+        """Plan a 2D pixel-space trajectory for executing a chess move.
+
+        Uses Cosmos Reason2's Action CoT to output normalized pixel
+        coordinates (0-1000) as waypoints for the gripper trajectory.
+
+        Args:
+            image: Current egocentric camera view
+            move_uci: Move in UCI format (e.g., 'e2e4')
+            from_square: Starting square
+            to_square: Target square
+            piece_type: Type of piece being moved (e.g., 'pawn', 'knight')
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+
+        Returns:
+            TrajectoryPlan with ordered waypoints and reasoning
+        """
+        prompt = self.TRAJECTORY_PLAN_PROMPT.format(
+            move_uci=move_uci,
+            from_square=from_square,
+            to_square=to_square,
+            piece_type=piece_type,
+        )
+
+        conversation = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            },
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return self._parse_trajectory_plan(output_text, move_uci)
+
+    def verify_goal(
+        self,
+        image: Image.Image,
+        move_uci: str,
+        from_square: str,
+        to_square: str,
+        piece_type: str = "piece",
+        max_new_tokens: int = 512,
+        temperature: float = 0.1,
+    ) -> "GoalVerification":
+        """Verify physical outcome of a chess move from post-action image.
+
+        Uses Cosmos Reason2 to visually check whether the move succeeded
+        physically, catching issues that FEN comparison misses (tilted
+        pieces, adjacent pieces bumped, gripper not released, etc.).
+
+        Args:
+            image: Post-action egocentric camera view
+            move_uci: Move that was attempted
+            from_square: Source square
+            to_square: Target square
+            piece_type: Type of piece moved
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+
+        Returns:
+            GoalVerification with success status and physical issue details
+        """
+        prompt = self.GOAL_VERIFICATION_PROMPT.format(
+            move_uci=move_uci,
+            from_square=from_square,
+            to_square=to_square,
+            piece_type=piece_type,
+        )
+
+        conversation = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            },
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return self._parse_goal_verification(output_text)
+
+    def _parse_trajectory_plan(self, response: str, move_uci: str) -> "TrajectoryPlan":
+        """Parse Cosmos response into TrajectoryPlan."""
+        data = extract_json(response)
+
+        if data is not None:
+            try:
+                waypoints = []
+                for wp in data.get("waypoints", []):
+                    waypoints.append(TrajectoryWaypoint(
+                        point_2d=tuple(wp["point_2d"]),
+                        label=wp.get("label", ""),
+                    ))
+                return TrajectoryPlan(
+                    waypoints=waypoints,
+                    move_uci=move_uci,
+                    reasoning=data.get("reasoning", response),
+                    confidence=float(data.get("confidence", 0.0)),
+                )
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+                pass
+
+        # Fallback
+        return TrajectoryPlan(
+            waypoints=[],
+            move_uci=move_uci,
+            reasoning=response,
+            confidence=0.0,
+        )
+
+    def _parse_goal_verification(self, response: str) -> "GoalVerification":
+        """Parse Cosmos response into GoalVerification."""
+        data = extract_json(response)
+
+        if data is not None:
+            try:
+                return GoalVerification(
+                    success=data.get("success", False),
+                    reason=data.get("reason", ""),
+                    physical_issues=data.get("physical_issues", []),
+                    confidence=float(data.get("confidence", 0.0)),
+                    reasoning=data.get("reasoning", response),
+                )
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
+        # Fallback: assume failure when parsing fails
+        return GoalVerification(
+            success=False,
+            reason="Failed to parse verification response",
+            physical_issues=["parse_failure"],
+            confidence=0.0,
+            reasoning=response,
+        )
+
 
 @dataclass
 class CorrectionPlan:
@@ -633,6 +884,54 @@ class ActionReasoning:
 
     confidence: float
     """Confidence in the analysis."""
+
+    reasoning: str
+    """Step-by-step reasoning from Cosmos."""
+
+
+@dataclass
+class TrajectoryWaypoint:
+    """A single 2D pixel waypoint in a gripper trajectory."""
+
+    point_2d: tuple[int, int]
+    """Normalized pixel coordinates (0-1000 range, origin top-left)."""
+
+    label: str
+    """Semantic label (e.g., 'above e2', 'grasp e2', 'lift')."""
+
+
+@dataclass
+class TrajectoryPlan:
+    """Planned 2D pixel-space trajectory for a chess move (Action CoT)."""
+
+    waypoints: list[TrajectoryWaypoint]
+    """Ordered list of waypoints the end-effector should follow."""
+
+    move_uci: str
+    """The UCI move this trajectory executes."""
+
+    reasoning: str
+    """Step-by-step reasoning about trajectory choices."""
+
+    confidence: float
+    """Confidence in the trajectory plan (0.0-1.0)."""
+
+
+@dataclass
+class GoalVerification:
+    """Result of post-action visual goal verification."""
+
+    success: bool
+    """Whether the move was physically successful."""
+
+    reason: str
+    """Brief explanation of the verification result."""
+
+    physical_issues: list[str]
+    """Detected physical issues (e.g., 'piece_unstable', 'adjacent_bumped')."""
+
+    confidence: float
+    """Confidence in the verification (0.0-1.0)."""
 
     reasoning: str
     """Step-by-step reasoning from Cosmos."""

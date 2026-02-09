@@ -129,6 +129,73 @@ def _mock_move_detection(move_uci: str, board: chess.Board) -> dict:
     }
 
 
+def _mock_trajectory_plan(move_uci: str, board: chess.Board) -> dict:
+    """Generate mock trajectory plan output (Action CoT)."""
+    from_sq = move_uci[:2]
+    to_sq = move_uci[2:4]
+    piece = board.piece_at(chess.parse_square(from_sq))
+    piece_name = chess.piece_name(piece.piece_type) if piece else "piece"
+
+    # Map algebraic square to approximate normalized pixel coords (0-1000)
+    # Simple linear mapping for demo: a=125, h=875 (X); 1=875, 8=125 (Y)
+    def sq_to_px(sq: str) -> tuple[int, int]:
+        file_idx = ord(sq[0]) - ord("a")
+        rank_idx = int(sq[1]) - 1
+        x = 125 + file_idx * 107
+        y = 875 - rank_idx * 107
+        return (x, y)
+
+    from_px = sq_to_px(from_sq)
+    to_px = sq_to_px(to_sq)
+    mid_y = min(from_px[1], to_px[1]) - 80  # lift above both squares
+
+    return {
+        "waypoints": [
+            {"point_2d": [from_px[0], from_px[1] - 40], "label": f"above {from_sq}"},
+            {"point_2d": list(from_px), "label": f"grasp {from_sq}"},
+            {"point_2d": [from_px[0], mid_y], "label": "lift"},
+            {"point_2d": [to_px[0], mid_y], "label": f"above {to_sq}"},
+            {"point_2d": list(to_px), "label": f"place {to_sq}"},
+        ],
+        "move_uci": move_uci,
+        "reasoning": (
+            f"The {piece_name} needs to move from {from_sq} to {to_sq}. "
+            f"I plan a vertical lift from {from_sq}, horizontal traverse at "
+            f"safe height avoiding adjacent pieces, then vertical descent "
+            f"to {to_sq}."
+        ),
+        "confidence": round(random.uniform(0.85, 0.95), 2),
+    }
+
+
+def _mock_goal_verification(success: bool = True) -> dict:
+    """Generate mock goal verification output."""
+    if success:
+        return {
+            "success": True,
+            "reason": "Piece correctly placed on target square, stable and upright",
+            "physical_issues": [],
+            "confidence": round(random.uniform(0.90, 0.97), 2),
+            "reasoning": (
+                "Looking at the board after the move, the piece appears to be "
+                "correctly centered on the target square. It is standing upright "
+                "and no adjacent pieces were disturbed."
+            ),
+        }
+    else:
+        return {
+            "success": False,
+            "reason": "Piece placed but leaning against adjacent piece",
+            "physical_issues": ["piece_unstable", "contact_with_adjacent"],
+            "confidence": round(random.uniform(0.80, 0.92), 2),
+            "reasoning": (
+                "The piece appears to be on the correct square but is leaning "
+                "against an adjacent piece. The gripper may have released at a "
+                "slight angle. The piece needs to be straightened."
+            ),
+        }
+
+
 def _mock_correction_reasoning() -> dict:
     """Generate mock correction reasoning output."""
     return {
@@ -181,14 +248,16 @@ def run_demo(scenario: str = "normal", max_moves: Optional[int] = None) -> None:
     print("=" * 60)
     print()
     print("This demo shows each phase of the orchestrator pipeline:")
-    print("  1. Turn detection    (Cosmos Reason2 video reasoning)")
-    print("  2. Move detection    (Cosmos Reason2 video reasoning)")
-    print("  3. Perception        (Cosmos Reason2 image -> FEN)")
-    print("  4. Planning          (Stockfish best move)")
-    print("  5. Action reasoning  (Cosmos Reason2 physical reasoning)")
-    print("  6. Verification      (FEN comparison)")
+    print("  1.  Turn detection       (Cosmos Reason2 video reasoning)")
+    print("  2.  Move detection       (Cosmos Reason2 video reasoning)")
+    print("  3.  Perception           (YOLO-DINO image -> FEN)")
+    print("  4.  Planning             (Stockfish best move)")
+    print("  5a. Action reasoning     (Cosmos Reason2 physical reasoning)")
+    print("  5b. Trajectory planning  (Cosmos Reason2 Action CoT -> pixel waypoints)")
+    print("  6a. Goal verification    (Cosmos Reason2 visual check)")
+    print("  6b. FEN verification     (FEN comparison)")
     if scenario == "failure-recovery":
-        print("  7. Recovery          (Cosmos Reason2 correction reasoning)")
+        print("  7.  Recovery             (Cosmos Reason2 correction reasoning)")
     print()
 
     board = chess.Board()
@@ -251,13 +320,18 @@ def run_demo(scenario: str = "normal", max_moves: Optional[int] = None) -> None:
             expected_fen = calculate_expected_fen(current_fen, move_uci)
             print(f"  Expected FEN after move: {expected_fen}")
 
-            # Phase 5: Action reasoning
-            _print_section("Phase 5: Action Reasoning (Cosmos Reason2 Physical)")
+            # Phase 5a: Action reasoning
+            _print_section("Phase 5a: Action Reasoning (Cosmos Reason2 Physical)")
             action = _mock_action_reasoning(move_uci, board)
             _print_json_block("Cosmos Reason2 output", action)
 
-            # Phase 5b: Execute
-            print("\n  Executing robot action...")
+            # Phase 5b: Trajectory planning (Action CoT)
+            _print_section("Phase 5b: Trajectory Planning (Cosmos Reason2 Action CoT)")
+            trajectory = _mock_trajectory_plan(move_uci, board)
+            _print_json_block("Cosmos Reason2 trajectory output", trajectory)
+
+            # Execute
+            print("\n  Executing robot action along planned trajectory...")
             time.sleep(0.5)
             print("  Robot action executed.")
 
@@ -276,7 +350,13 @@ def run_demo(scenario: str = "normal", max_moves: Optional[int] = None) -> None:
                 # Pretend verification sees wrong state (piece on adjacent square)
                 wrong_fen = board.fen()  # pre-move = "piece didn't move"
 
-                _print_section("Phase 6: Verification (FEN Comparison) — FAILURE")
+                # Phase 6a: Goal verification (failure)
+                _print_section("Phase 6a: Goal Verification (Cosmos Reason2 Visual) — FAILURE")
+                goal_check = _mock_goal_verification(success=False)
+                _print_json_block("Cosmos Reason2 visual check", goal_check)
+
+                # Phase 6b: FEN verification (failure)
+                _print_section("Phase 6b: FEN Verification — FAILURE")
                 comparison = compare_fen_states(expected_fen, wrong_fen)
                 print(f"  Expected: {expected_fen}")
                 print(f"  Actual:   {wrong_fen}")
@@ -292,8 +372,12 @@ def run_demo(scenario: str = "normal", max_moves: Optional[int] = None) -> None:
                 time.sleep(0.5)
                 print("  Correction executed.")
 
-                # Now verify again (success)
-                _print_section("Phase 6 (retry): Verification — SUCCESS")
+                # Re-verify (success)
+                _print_section("Phase 6a (retry): Goal Verification — SUCCESS")
+                goal_check2 = _mock_goal_verification(success=True)
+                _print_json_block("Cosmos Reason2 visual check", goal_check2)
+
+                _print_section("Phase 6b (retry): FEN Verification — SUCCESS")
                 board.push(move)
                 actual_fen = board.fen()
                 comparison2 = compare_fen_states(expected_fen, actual_fen)
@@ -302,11 +386,16 @@ def run_demo(scenario: str = "normal", max_moves: Optional[int] = None) -> None:
                 print(f"  Match: {comparison2.match}")
                 print("\n  Recovery successful!")
             else:
-                # Normal verification (success)
+                # Phase 6a: Goal verification (success)
+                _print_section("Phase 6a: Goal Verification (Cosmos Reason2 Visual)")
+                goal_check = _mock_goal_verification(success=True)
+                _print_json_block("Cosmos Reason2 visual check", goal_check)
+
+                # Phase 6b: FEN verification (success)
                 board.push(move)
                 actual_fen = board.fen()
 
-                _print_section("Phase 6: Verification (FEN Comparison)")
+                _print_section("Phase 6b: FEN Verification")
                 comparison = compare_fen_states(expected_fen, actual_fen)
                 print(f"  Expected: {expected_fen}")
                 print(f"  Actual:   {actual_fen}")

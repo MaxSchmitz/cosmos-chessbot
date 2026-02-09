@@ -6,6 +6,9 @@ from .game_reasoning import (
     MoveDetection,
     CorrectionPlan,
     ActionReasoning,
+    TrajectoryPlan,
+    TrajectoryWaypoint,
+    GoalVerification,
 )
 from .fen_comparison import (
     FENComparison,
@@ -23,6 +26,9 @@ __all__ = [
     "MoveDetection",
     "CorrectionPlan",
     "ActionReasoning",
+    "TrajectoryPlan",
+    "TrajectoryWaypoint",
+    "GoalVerification",
     "FENComparison",
     "SquareDifference",
     "compare_fen_states",

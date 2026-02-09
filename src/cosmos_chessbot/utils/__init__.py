@@ -4,6 +4,8 @@ import json
 import logging
 from typing import Optional
 
+from .pixel_to_board import BoardCalibration
+
 
 def extract_json(text: str) -> Optional[dict]:
     """Extract the first valid JSON object from text by tracking brace depth.

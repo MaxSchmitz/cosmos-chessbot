@@ -60,13 +60,15 @@ Perception (image → FEN) is handled locally by YOLO-DINO, which provides fast,
 | Egocentric social reasoning | Excellent | N/A |
 | Temporal video understanding | Excellent | N/A |
 | Physical cause-effect reasoning | Excellent | N/A |
+| Action CoT (2D pixel trajectories) | Excellent | N/A |
+| Goal verification (visual check) | Excellent | N/A |
 | Object detection / bounding boxes | Possible (future) | Excellent |
 | FEN extraction from board | Not trained for this | Reliable via geometry |
 | Latency | ~2-5s (LLM inference) | ~15ms (local) |
 
 Cosmos-Reason2 excels at understanding **what is happening** in a scene — whose turn it is, what a human is doing, what went wrong physically. YOLO-DINO excels at **what is where** — detecting and locating chess pieces. Using each where it's strongest gives the best overall system.
 
-## The Four Reasoning Modes
+## The Six Reasoning Modes
 
 ### 1. Turn Detection — `analyze_game_state(video_frames)`
 
@@ -205,6 +207,80 @@ Looking at my egocentric camera view, reason about:
 
 **Used in**: `orchestrator.recover()` — correction reasoning before executing a fix
 
+### 5. Trajectory Planning — `plan_trajectory(image, move_uci, from_square, to_square, piece_type)`
+
+**Purpose**: Plan a 2D pixel-space end-effector trajectory using the Cosmos-Reason2 Action CoT format. Outputs normalized pixel coordinates (0-1000) that convert to 3D board-plane coordinates via homography.
+
+**Robot-centric prompt** (from `game_reasoning.py`):
+
+```
+I need to execute a chess move: e2e4
+Pick up the pawn from e2 and place it on e4.
+
+Looking at my egocentric camera view, specify the 2D trajectory my gripper should follow
+in normalized pixel coordinates (0-1000 range, where (0,0) is the top-left corner and
+(1000,1000) is the bottom-right).
+
+Plan waypoints for:
+1. Position above the source square (e2) for approach
+2. Lower to grasp the piece on e2
+3. Lift the piece to safe clearance height
+4. Move to position above the target square (e4), avoiding any obstacles
+5. Lower to place the piece on e4
+```
+
+**Input**: `PIL.Image` (current egocentric view) + move details + piece type
+
+**Output**:
+```json
+{
+    "waypoints": [
+        {"point_2d": [553, 728], "label": "above e2"},
+        {"point_2d": [553, 768], "label": "grasp e2"},
+        {"point_2d": [553, 474], "label": "lift"},
+        {"point_2d": [553, 474], "label": "above e4"},
+        {"point_2d": [553, 554], "label": "place e4"}
+    ],
+    "reasoning": "Vertical lift from e2, horizontal traverse at safe height...",
+    "confidence": 0.88
+}
+```
+
+**Used in**: `orchestrator.compile_intent()` — pixel waypoints are converted to 3D board-plane coordinates via `BoardCalibration` (homography from 4 board corners)
+
+### 6. Goal Verification — `verify_goal(image, move_uci, from_square, to_square, piece_type)`
+
+**Purpose**: Visually verify the physical outcome of a move execution. Catches issues that FEN comparison misses: piece tipped over, adjacent pieces bumped, gripper didn't release, piece off-center.
+
+**Robot-centric prompt** (from `game_reasoning.py`):
+
+```
+I just attempted to execute a chess move: e2e4
+I picked up the pawn from e2 and tried to place it on e4.
+
+Looking at my egocentric camera view of the board AFTER the move attempt, verify:
+1. Is the piece correctly placed on e4?
+2. Is the piece stable and upright (not leaning or tipped)?
+3. Were any adjacent pieces bumped or displaced?
+4. Did the gripper fully release the piece?
+5. Are there any other physical issues visible?
+```
+
+**Input**: `PIL.Image` (post-action egocentric view) + move details
+
+**Output**:
+```json
+{
+    "success": true,
+    "reason": "Piece correctly placed on target square, stable and upright",
+    "physical_issues": [],
+    "confidence": 0.93,
+    "reasoning": "The piece appears correctly centered on e4, standing upright..."
+}
+```
+
+**Used in**: `orchestrator.verify()` — visual check runs BEFORE FEN comparison for two-stage verification
+
 ## Remote Server Endpoints
 
 When running Cosmos-Reason2 on a brev GPU server, the `RemoteChessGameReasoning` client in `reasoning/remote_reasoning.py` mirrors the local `ChessGameReasoning` interface:
@@ -214,6 +290,8 @@ When running Cosmos-Reason2 on a brev GPU server, the `RemoteChessGameReasoning`
 | `analyze_game_state(frames)` | `POST /reason/analyze_game` | `frames_base64: list[str]` |
 | `detect_move(frames)` | `POST /reason/detect_move` | `frames_base64: list[str]` |
 | `reason_about_action(image, ...)` | `POST /reason/action` | `image_base64, move_uci, from_square, to_square` |
+| `plan_trajectory(image, ...)` | `POST /reason/trajectory` | `image_base64, move_uci, from_square, to_square, piece_type` |
+| `verify_goal(image, ...)` | `POST /reason/verify_goal` | `image_base64, move_uci, from_square, to_square, piece_type` |
 | `plan_correction(image, ...)` | `POST /reason/correction` | `image_base64, expected_fen, actual_fen, differences` |
 
 The orchestrator automatically uses `RemoteChessGameReasoning` when `--cosmos-server` is set, or `ChessGameReasoning` (local) otherwise.

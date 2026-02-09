@@ -8,6 +8,8 @@ Endpoints:
     GET  /health              — Health check
     POST /perceive            — Board state perception (FEN extraction)
     POST /reason/action       — Pre-action reasoning (obstacles, grasp strategy)
+    POST /reason/trajectory   — Action CoT trajectory planning (2D pixel waypoints)
+    POST /reason/verify_goal  — Post-action visual goal verification
     POST /reason/analyze_game — Turn detection from video frames
     POST /reason/detect_move  — Opponent move detection from video frames
     POST /reason/correction   — Post-failure correction planning
@@ -64,6 +66,28 @@ class ActionReasoningRequest(BaseModel):
 class VideoReasoningRequest(BaseModel):
     """Request for video-based reasoning (turn/move detection)."""
     frames_base64: list[str]
+    max_new_tokens: int = 512
+    temperature: float = 0.1
+
+
+class TrajectoryRequest(BaseModel):
+    """Request for trajectory planning (Action CoT)."""
+    image_base64: str
+    move_uci: str
+    from_square: str
+    to_square: str
+    piece_type: str = "piece"
+    max_new_tokens: int = 1024
+    temperature: float = 0.1
+
+
+class GoalVerificationRequest(BaseModel):
+    """Request for post-action goal verification."""
+    image_base64: str
+    move_uci: str
+    from_square: str
+    to_square: str
+    piece_type: str = "piece"
     max_new_tokens: int = 512
     temperature: float = 0.1
 
@@ -176,6 +200,64 @@ async def reason_action(request: ActionReasoningRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Action reasoning failed: {e}")
+
+
+@app.post("/reason/trajectory")
+async def reason_trajectory(request: TrajectoryRequest):
+    """Plan a 2D pixel-space trajectory for a chess move (Action CoT)."""
+    if reasoning is None:
+        raise HTTPException(status_code=503, detail="Reasoning model not loaded")
+
+    try:
+        image = _decode_image(request.image_base64)
+        result = reasoning.plan_trajectory(
+            image=image,
+            move_uci=request.move_uci,
+            from_square=request.from_square,
+            to_square=request.to_square,
+            piece_type=request.piece_type,
+            max_new_tokens=request.max_new_tokens,
+            temperature=request.temperature,
+        )
+        return {
+            "waypoints": [
+                {"point_2d": list(wp.point_2d), "label": wp.label}
+                for wp in result.waypoints
+            ],
+            "move_uci": result.move_uci,
+            "reasoning": result.reasoning,
+            "confidence": result.confidence,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Trajectory planning failed: {e}")
+
+
+@app.post("/reason/verify_goal")
+async def reason_verify_goal(request: GoalVerificationRequest):
+    """Verify physical outcome of a chess move from post-action image."""
+    if reasoning is None:
+        raise HTTPException(status_code=503, detail="Reasoning model not loaded")
+
+    try:
+        image = _decode_image(request.image_base64)
+        result = reasoning.verify_goal(
+            image=image,
+            move_uci=request.move_uci,
+            from_square=request.from_square,
+            to_square=request.to_square,
+            piece_type=request.piece_type,
+            max_new_tokens=request.max_new_tokens,
+            temperature=request.temperature,
+        )
+        return {
+            "success": result.success,
+            "reason": result.reason,
+            "physical_issues": result.physical_issues,
+            "confidence": result.confidence,
+            "reasoning": result.reasoning,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Goal verification failed: {e}")
 
 
 @app.post("/reason/analyze_game")

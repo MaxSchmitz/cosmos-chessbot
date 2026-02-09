@@ -126,6 +126,41 @@ Output: { "physical_cause": "Piece slipped during placement",
           "confidence": 0.88 }
 ```
 
+### 5. Trajectory Planning — Action CoT (Image → Pixel Waypoints)
+
+Plans a 2D end-effector trajectory in normalized pixel coordinates (0-1000), following the Cosmos-Reason2 Action CoT format. The chess board is a known flat plane, so pixel waypoints convert to 3D board-plane coordinates via homography.
+
+```
+Input:  Current egocentric camera image + move (e.g., "e2e4")
+Prompt: "I need to execute chess move e2e4. Specify the 2D trajectory
+         my gripper should follow in normalized pixel coordinates (0-1000)..."
+
+Output: { "waypoints": [
+            {"point_2d": [553, 728], "label": "above e2"},
+            {"point_2d": [553, 768], "label": "grasp e2"},
+            {"point_2d": [553, 474], "label": "lift"},
+            {"point_2d": [553, 474], "label": "above e4"},
+            {"point_2d": [553, 554], "label": "place e4"}
+          ],
+          "reasoning": "Vertical lift, horizontal traverse at safe height...",
+          "confidence": 0.88 }
+```
+
+### 6. Goal Verification (Post-Action Image → Success/Failure)
+
+Visually verifies the physical outcome after the robot executes a move. Catches issues that FEN comparison misses: piece tipped over, adjacent pieces bumped, gripper didn't release.
+
+```
+Input:  Post-action egocentric camera image + move details
+Prompt: "I just attempted chess move e2e4. Has the robot successfully
+         placed the pawn on e4? Is it stable? Were adjacent pieces bumped?"
+
+Output: { "success": true,
+          "reason": "Piece correctly placed, stable and upright",
+          "physical_issues": [],
+          "confidence": 0.93 }
+```
+
 ## Core Components
 
 ### 1. YOLO-DINO (Local Perception)
@@ -165,9 +200,9 @@ Each move follows this loop:
 1. **Sense** — Capture egocentric and wrist camera images
 2. **Perceive** — YOLO-DINO extracts board state (FEN)
 3. **Plan** — Stockfish computes best move via UCI
-4. **Compile Intent** — Cosmos-Reason2 reasons about physical constraints (obstacles, grasp strategy, trajectory)
+4. **Compile Intent** — Cosmos-Reason2 reasons about physical constraints + plans 2D pixel trajectory (Action CoT)
 5. **Act** — PPO policy executes the manipulation on SO-101
-6. **Verify** — Compare expected vs actual FEN after move
+6. **Verify** — Two-stage: Cosmos visual goal verification, then FEN comparison
 7. **Recover** — If verification fails, Cosmos-Reason2 diagnoses the physical failure and plans correction
 
 ### Full-Game Mode (`--game-mode full-game`)
@@ -268,6 +303,8 @@ Server endpoints:
 | `/health` | GET | Health check |
 | `/perceive` | POST | Board state perception (FEN extraction) |
 | `/reason/action` | POST | Pre-action physical reasoning |
+| `/reason/trajectory` | POST | Action CoT trajectory planning (2D pixel waypoints) |
+| `/reason/verify_goal` | POST | Post-action visual goal verification |
 | `/reason/analyze_game` | POST | Turn detection from video frames |
 | `/reason/detect_move` | POST | Opponent move detection from video |
 | `/reason/correction` | POST | Post-failure correction planning |

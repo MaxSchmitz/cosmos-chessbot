@@ -110,6 +110,63 @@ curl -X POST http://your-brev-server:8000/reason/action \
 }
 ```
 
+### `POST /reason/trajectory`
+
+Action CoT trajectory planning — outputs normalized 2D pixel waypoints (0-1000) for the gripper trajectory.
+
+```bash
+curl -X POST http://your-brev-server:8000/reason/trajectory \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_base64": "<base64-png>",
+    "move_uci": "e2e4",
+    "from_square": "e2",
+    "to_square": "e4",
+    "piece_type": "pawn"
+  }'
+```
+
+```json
+{
+    "waypoints": [
+        {"point_2d": [553, 728], "label": "above e2"},
+        {"point_2d": [553, 768], "label": "grasp e2"},
+        {"point_2d": [553, 474], "label": "lift"},
+        {"point_2d": [553, 474], "label": "above e4"},
+        {"point_2d": [553, 554], "label": "place e4"}
+    ],
+    "move_uci": "e2e4",
+    "reasoning": "The pawn needs to move from e2 to e4. Vertical lift, horizontal traverse...",
+    "confidence": 0.88
+}
+```
+
+### `POST /reason/verify_goal`
+
+Post-action visual goal verification — checks whether the move physically succeeded.
+
+```bash
+curl -X POST http://your-brev-server:8000/reason/verify_goal \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_base64": "<base64-png>",
+    "move_uci": "e2e4",
+    "from_square": "e2",
+    "to_square": "e4",
+    "piece_type": "pawn"
+  }'
+```
+
+```json
+{
+    "success": true,
+    "reason": "Piece correctly placed on target square, stable and upright",
+    "physical_issues": [],
+    "confidence": 0.93,
+    "reasoning": "Looking at the board after the move, the piece appears correctly centered..."
+}
+```
+
 ### `POST /reason/analyze_game`
 
 Turn detection from video frames.

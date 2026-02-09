@@ -17,7 +17,10 @@ from .game_reasoning import (
     ActionReasoning,
     CorrectionPlan,
     GameState,
+    GoalVerification,
     MoveDetection,
+    TrajectoryPlan,
+    TrajectoryWaypoint,
     Turn,
 )
 
@@ -169,6 +172,81 @@ class RemoteChessGameReasoning:
             physical_cause=data.get("physical_cause", ""),
             correction_needed=data.get("correction_needed", ""),
             obstacles=data.get("obstacles", []),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", ""),
+        )
+
+    def plan_trajectory(
+        self,
+        image: Image.Image,
+        move_uci: str,
+        from_square: str,
+        to_square: str,
+        piece_type: str = "piece",
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+    ) -> TrajectoryPlan:
+        """Plan trajectory via remote server."""
+        response = self.client.post(
+            f"{self.server_url}/reason/trajectory",
+            json={
+                "image_base64": _encode_image(image),
+                "move_uci": move_uci,
+                "from_square": from_square,
+                "to_square": to_square,
+                "piece_type": piece_type,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        waypoints = [
+            TrajectoryWaypoint(
+                point_2d=tuple(wp["point_2d"]),
+                label=wp.get("label", ""),
+            )
+            for wp in data.get("waypoints", [])
+        ]
+
+        return TrajectoryPlan(
+            waypoints=waypoints,
+            move_uci=data.get("move_uci", move_uci),
+            reasoning=data.get("reasoning", ""),
+            confidence=float(data.get("confidence", 0.0)),
+        )
+
+    def verify_goal(
+        self,
+        image: Image.Image,
+        move_uci: str,
+        from_square: str,
+        to_square: str,
+        piece_type: str = "piece",
+        max_new_tokens: int = 512,
+        temperature: float = 0.1,
+    ) -> GoalVerification:
+        """Verify goal via remote server."""
+        response = self.client.post(
+            f"{self.server_url}/reason/verify_goal",
+            json={
+                "image_base64": _encode_image(image),
+                "move_uci": move_uci,
+                "from_square": from_square,
+                "to_square": to_square,
+                "piece_type": piece_type,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return GoalVerification(
+            success=data.get("success", False),
+            reason=data.get("reason", ""),
+            physical_issues=data.get("physical_issues", []),
             confidence=float(data.get("confidence", 0.0)),
             reasoning=data.get("reasoning", ""),
         )

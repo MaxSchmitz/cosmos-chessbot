@@ -176,7 +176,8 @@ class ChessOrchestrator:
     def compile_intent(self, move: str, board_state: BoardState, image=None) -> dict:
         """Compile symbolic move into physical manipulation intent.
 
-        Uses Cosmos-Reason2 to reason about physical constraints.
+        Uses Cosmos-Reason2 to reason about physical constraints and
+        plan a 2D pixel-space trajectory (Action CoT).
 
         Args:
             move: UCI move (e.g., 'e2e4')
@@ -184,11 +185,20 @@ class ChessOrchestrator:
             image: Current egocentric image (for reasoning)
 
         Returns:
-            Intent dictionary with pick/place squares and constraints
+            Intent dictionary with pick/place squares, trajectory, and constraints
         """
         # Parse move
         from_square = move[:2]
         to_square = move[2:4]
+
+        # Determine piece type for more specific prompts
+        piece_type = "piece"
+        try:
+            piece = chess.Board(board_state.fen).piece_at(chess.parse_square(from_square))
+            if piece:
+                piece_type = chess.piece_name(piece.piece_type)
+        except Exception:
+            pass
 
         # Use Cosmos-Reason2 for pre-action reasoning if available
         action_reasoning = None
@@ -204,11 +214,37 @@ class ChessOrchestrator:
             print(f"  Grasp strategy: {action_reasoning.grasp_strategy}")
             print(f"  Risks: {action_reasoning.risks}")
 
+        # Plan trajectory using Action CoT
+        trajectory_plan = None
+        waypoints_3d = None
+        if self.game_reasoning and image:
+            print(f"Planning trajectory (Action CoT): {move}")
+            trajectory_plan = self.game_reasoning.plan_trajectory(
+                image=image,
+                move_uci=move,
+                from_square=from_square,
+                to_square=to_square,
+                piece_type=piece_type,
+            )
+            print(f"  Waypoints: {len(trajectory_plan.waypoints)}")
+            for wp in trajectory_plan.waypoints:
+                print(f"    {wp.label}: ({wp.point_2d[0]}, {wp.point_2d[1]})")
+
+            # Convert to 3D if calibration available
+            if hasattr(self, 'board_calibration') and self.board_calibration and trajectory_plan.waypoints:
+                waypoints_3d = self.board_calibration.waypoints_to_3d(
+                    trajectory_plan.waypoints
+                )
+                print(f"  3D waypoints computed ({len(waypoints_3d)} points)")
+
         return {
             "pick_square": from_square,
             "place_square": to_square,
             "move_uci": move,
+            "piece_type": piece_type,
             "action_reasoning": action_reasoning,
+            "trajectory_plan": trajectory_plan,
+            "waypoints_3d": waypoints_3d,
             "constraints": {
                 "approach": "from_above",
                 "clearance": 0.05,  # meters
@@ -284,37 +320,56 @@ class ChessOrchestrator:
         # For now, just simulate success
         return False
 
-    def verify(self, expected_fen: str, vision_backend="yolo") -> tuple[bool, BoardState, "FENComparison"]:
-        """Verify board state after action using FEN comparison.
+    def verify(self, expected_fen: str, intent: dict = None, vision_backend="yolo") -> tuple:
+        """Verify board state after action using visual check + FEN comparison.
+
+        Two-stage verification:
+        1. Visual goal check (Cosmos Reason2) — catches physical issues
+           (piece tipped, adjacent bumped, gripper didn't release)
+        2. FEN comparison — catches logical placement errors
 
         Args:
             expected_fen: Expected FEN after move
+            intent: Intent dict from compile_intent (for move details)
             vision_backend: Which vision system to use ("cosmos" or "yolo")
 
         Returns:
-            Tuple of (success, actual_board_state, fen_comparison)
+            Tuple of (success, actual_board_state, fen_comparison, goal_verification)
         """
         overhead, _ = self.sense()
 
-        # Extract FEN using selected backend
+        # Stage 1: Visual goal verification (Cosmos Reason2)
+        goal_verification = None
+        if self.game_reasoning and intent:
+            print("  Visual goal check (Cosmos Reason2)...")
+            goal_verification = self.game_reasoning.verify_goal(
+                image=overhead,
+                move_uci=intent["move_uci"],
+                from_square=intent["pick_square"],
+                to_square=intent["place_square"],
+                piece_type=intent.get("piece_type", "piece"),
+            )
+            status = "PASS" if goal_verification.success else "FAIL"
+            print(f"  Visual check: {status} "
+                  f"(confidence: {goal_verification.confidence:.2f})")
+            if goal_verification.physical_issues:
+                print(f"  Physical issues: {goal_verification.physical_issues}")
+
+        # Stage 2: FEN comparison
         if vision_backend == "cosmos":
             actual_state = self.perceive(overhead)
-            actual_fen = actual_state.fen
         else:
-            # TODO: Use YOLO-DINO detector when available
             actual_state = self.perceive(overhead)
-            actual_fen = actual_state.fen
 
-        # Compare FENs
-        fen_comparison = compare_fen_states(expected_fen, actual_fen)
+        fen_comparison = compare_fen_states(expected_fen, actual_state.fen)
 
         if not fen_comparison.match:
-            print("❌ Verification failed!")
+            print("  FEN comparison: FAIL")
             print(fen_comparison.summary())
         else:
-            print("✅ Verification passed!")
+            print("  FEN comparison: PASS")
 
-        return fen_comparison.match, actual_state, fen_comparison
+        return fen_comparison.match, actual_state, fen_comparison, goal_verification
 
     def recover(
         self,
@@ -381,7 +436,7 @@ class ChessOrchestrator:
                 continue
 
             # Verify correction
-            verify_success, new_state, new_comparison = self.verify(expected_fen)
+            verify_success, new_state, new_comparison, _ = self.verify(expected_fen)
 
             if verify_success:
                 print(f"  ✅ Recovery successful!")
@@ -439,9 +494,11 @@ class ChessOrchestrator:
             print(f"❌ Execution failed at robot control level")
             return False
 
-        # 4. Verify using FEN comparison
+        # 4. Verify using visual check + FEN comparison
         print(f"\n🔍 Verifying result...")
-        verify_success, actual_state, fen_comparison = self.verify(expected_fen)
+        verify_success, actual_state, fen_comparison, goal_check = self.verify(
+            expected_fen, intent=intent
+        )
 
         if verify_success:
             print(f"✅ Move completed successfully!")
