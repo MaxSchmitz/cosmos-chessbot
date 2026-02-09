@@ -56,6 +56,9 @@ outputs/
 *.log
 logs/
 
+# Research papers
+*.pdf
+
 # OS
 .DS_Store
 Thumbs.db
@@ -65,6 +68,26 @@ Thumbs.db
 
 # uv
 uv.lock
+
+# Generated evaluation/training artifacts
+annotation_check/
+baseline_results/
+runs/
+
+# Untracked data directories
+data/data/
+data/chess/
+data/chessred2k/
+data/chessred2k_pose/
+data/chessred2k_yolo/
+data/calibration/
+data/camera_test/
+data/fen_evaluation/
+data/fen_evaluation_conf010/
+data/fen_pipeline_test/
+data/textures/
+data/value_llava/
+data/value_llava_test/
 
 # Assets (large files)
 assets/*.mp4

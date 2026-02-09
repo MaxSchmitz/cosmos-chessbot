@@ -328,32 +328,26 @@ By choosing chess, we isolate the hardest unsolved problem: **making symbolic de
 
 ```
 cosmos-chessbot/
-├── src/cosmos_chessbot/
-│   ├── orchestrator/           # Main control loop (single-move + full-game)
-│   │   └── orchestrator.py     # ChessOrchestrator with game loop
-│   ├── vision/                 # Perception (YOLO-DINO, board segmentation)
-│   │   ├── fen_detection.py    # YOLO piece detection -> FEN
-│   │   ├── board_segmentation.py  # Ultimate V2 board crop
-│   │   ├── llm_fen_detector.py # Claude/GPT/Gemini FEN fallback
-│   │   └── camera.py           # Camera capture interface
-│   ├── reasoning/              # Cosmos-Reason2 game reasoning
-│   │   ├── game_reasoning.py   # Turn detection, move detection, action/correction reasoning
-│   │   ├── fen_comparison.py   # FEN diff, expected FEN calculation, correction moves
-│   │   └── remote_reasoning.py # HTTP client for brev GPU server
-│   ├── stockfish/              # UCI engine wrapper
-│   ├── policy/                 # Manipulation policies (PPO, Cosmos Policy)
-│   ├── isaac/                  # Isaac Sim RL environment
-│   ├── schemas/                # Pydantic models for server I/O
-│   └── main.py                 # CLI entry point
+├── src/cosmos_chessbot/          # Main package
+│   ├── orchestrator/             # Control loop
+│   ├── vision/                   # Perception (YOLO-DINO, board segmentation)
+│   ├── reasoning/                # Cosmos-Reason2 reasoning
+│   ├── stockfish/                # UCI engine wrapper
+│   ├── policy/                   # Manipulation policies
+│   ├── isaac/                    # Isaac Sim RL environment
+│   └── schemas/                  # Pydantic I/O models
 ├── scripts/
-│   ├── cosmos_server.py        # Cosmos-Reason2 GPU server (perception + reasoning)
-│   ├── train_chess_rl.py       # PPO training in Isaac Sim
-│   ├── eval_policy.py          # Policy evaluation
-│   └── run_sim_policy_on_real_robot.py  # Sim-to-real deployment
-├── data/
-│   ├── usd/                    # 13 USD assets (board + 12 piece types)
-│   └── chess_fen_*.jsonl       # FEN datasets (train/val/test)
-└── README.md
+│   ├── cosmos_server.py          # Cosmos-Reason2 GPU server
+│   ├── training/                 # Model training scripts
+│   ├── evaluation/               # Benchmarking and evaluation
+│   ├── data/                     # Dataset generation and conversion
+│   ├── hardware/                 # Robot calibration and deployment
+│   ├── testing/                  # Integration tests and smoke tests
+│   └── visualization/            # Visualization and inspection
+├── docs/                         # Guides, architecture docs, model cards
+├── data/                         # Datasets and USD assets
+├── models/                       # Pre-trained model weights
+└── config/                       # Configuration files
 ```
 
 ## Reference
@@ -427,5 +421,6 @@ uv run python scripts/run_sim_policy_on_real_robot.py \
 - [NVIDIA Isaac Sim / IsaacLab](https://github.com/isaac-sim/IsaacLab) for the simulation and RL training framework
 - [The Robot Studio / Hugging Face](https://github.com/TheRobotStudio/SO-ARM100) for the SO-100/SO-101 robot arm
 - [LightwheelAI](https://github.com/LightwheelAI) for LeIsaac, which our Isaac Sim training environment builds on
+- [ChessReD2k](https://arxiv.org/abs/2310.04086) (Masouris et al., VISAPP 2024) for the chess recognition dataset used to train our YOLO piece detection and board corner models
 - [Stockfish](https://stockfishchess.org/) developers for the UCI chess engine
 - [Claude Code](https://claude.ai/claude-code) (Anthropic) for assistance writing the codebase
