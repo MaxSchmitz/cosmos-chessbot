@@ -425,4 +425,7 @@ uv run python scripts/run_sim_policy_on_real_robot.py \
 
 - [NVIDIA Cosmos](https://github.com/NVIDIA/Cosmos) team for Physical AI models and tooling
 - [NVIDIA Isaac Sim / IsaacLab](https://github.com/isaac-sim/IsaacLab) for the simulation and RL training framework
+- [The Robot Studio / Hugging Face](https://github.com/TheRobotStudio/SO-ARM100) for the SO-100/SO-101 robot arm
+- [LightwheelAI](https://github.com/LightwheelAI) for LeIsaac, which our Isaac Sim training environment builds on
 - [Stockfish](https://stockfishchess.org/) developers for the UCI chess engine
+- [Claude Code](https://claude.ai/claude-code) (Anthropic) for assistance writing the codebase
