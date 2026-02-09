@@ -2,6 +2,9 @@
 """
 Visualize FEN detection on any input image.
 
+Always shows raw YOLO bounding boxes (piece detections) and board pose
+(corner keypoints), even when one or both models find nothing.
+
 Usage:
     uv run python scripts/visualization/visualize_fen_detection.py path/to/image.jpg
     uv run python scripts/visualization/visualize_fen_detection.py path/to/image.jpg -o output.jpg
@@ -17,14 +20,26 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from cosmos_chessbot.vision.yolo_dino_detector import YOLODINOFenDetector
+from cosmos_chessbot.vision.yolo_dino_detector import (
+    YOLODINOFenDetector, CLASS_NAMES, CLASS_TO_PIECE,
+)
 
 PIECE_WEIGHTS = "runs/detect/runs/detect/yolo26_chess/weights/best.pt"
 CORNER_WEIGHTS = "runs/pose/runs/pose/board_corners/weights/best.pt"
 
 
-def draw_annotations(image, corners, pieces, fen):
-    """Draw board pose, piece bounding boxes, and FEN onto a BGR image."""
+def draw_annotations(image, corners, raw_detections, mapped_pieces, fen):
+    """Draw board pose, all raw YOLO bounding boxes, and FEN onto a BGR image.
+
+    Args:
+        image: BGR numpy array
+        corners: (4, 2) corner array or None
+        raw_detections: list of dicts with bbox/class/confidence from YOLO
+            (always shown, even without corners)
+        mapped_pieces: list of dicts with bbox/class/confidence/square
+            (only pieces that mapped to a square via homography)
+        fen: detected FEN string
+    """
     vis = image.copy()
     h, w = vis.shape[:2]
 
@@ -40,15 +55,12 @@ def draw_annotations(image, corners, pieces, fen):
     # -- Board pose: outline + corner keypoints --
     if corners is not None:
         pts = corners.astype(np.int32)
-        # Draw board outline with semi-transparent overlay
         overlay = vis.copy()
         cv2.polylines(overlay, [pts], isClosed=True, color=(0, 255, 0), thickness=thick + 2)
         cv2.addWeighted(overlay, 0.7, vis, 0.3, 0, vis)
-        # Solid outline on top
         for i in range(4):
             cv2.line(vis, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), thick)
 
-        # Corner keypoints
         colors = [(0, 255, 0), (0, 165, 255), (0, 0, 255), (255, 0, 0)]
         labels = ["TL", "TR", "BR", "BL"]
         for pt, col, lbl in zip(pts, colors, labels):
@@ -57,26 +69,56 @@ def draw_annotations(image, corners, pieces, fen):
             cv2.putText(vis, lbl, (pt[0] + radius + 4, pt[1] - radius // 2),
                         cv2.FONT_HERSHEY_SIMPLEX, font_med, col, thin + 1, cv2.LINE_AA)
 
-    # -- Piece bounding boxes --
-    for det in pieces:
+    # Set of mapped bboxes so we can distinguish mapped vs unmapped
+    mapped_bboxes = set()
+    for det in mapped_pieces:
+        mapped_bboxes.add(tuple(int(v) for v in det["bbox"]))
+
+    # -- All raw YOLO bounding boxes --
+    for det in raw_detections:
         x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
-        piece = det["piece"]
+        bbox_key = (x1, y1, x2, y2)
+        piece_char = det["piece"]
         conf = det["confidence"]
-        color = (0, 220, 255) if piece.isupper() else (255, 100, 100)
+        is_mapped = bbox_key in mapped_bboxes
+
+        if is_mapped:
+            # Find the square name from mapped_pieces
+            square = "?"
+            for mp in mapped_pieces:
+                if tuple(int(v) for v in mp["bbox"]) == bbox_key:
+                    square = mp["square"]
+                    break
+            color = (0, 220, 255) if piece_char.isupper() else (255, 100, 100)
+            label = f"{det['class']} {conf:.2f} -> {square}"
+        else:
+            # Unmapped: detected by YOLO but not placed on board
+            color = (128, 128, 128)
+            label = f"{det['class']} {conf:.2f} (unmapped)"
+
         cv2.rectangle(vis, (x1, y1), (x2, y2), color, thin + 1)
-        label = f"{det['class']} {conf:.2f} -> {det['square']}"
-        # Text background for readability
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_sm, thin)
-        cv2.rectangle(vis, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
+        (tw, th_text), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_sm, thin)
+        cv2.rectangle(vis, (x1, y1 - th_text - 8), (x1 + tw + 4, y1), color, -1)
         cv2.putText(vis, label, (x1 + 2, y1 - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, font_sm, (0, 0, 0), thin, cv2.LINE_AA)
 
-    # -- FEN text at bottom --
-    fen_label = f"FEN: {fen}"
-    (tw, th), _ = cv2.getTextSize(fen_label, cv2.FONT_HERSHEY_SIMPLEX, font_big, thick)
-    cv2.rectangle(vis, (5, h - th - 20), (tw + 15, h - 5), (0, 0, 0), -1)
-    cv2.putText(vis, fen_label, (10, h - 14),
-                cv2.FONT_HERSHEY_SIMPLEX, font_big, (0, 255, 0), thick, cv2.LINE_AA)
+    # -- Status + FEN text at bottom --
+    lines = []
+    if corners is None:
+        lines.append("Board pose: NOT DETECTED")
+    else:
+        lines.append("Board pose: OK")
+    lines.append(f"Detections: {len(raw_detections)} raw, {len(mapped_pieces)} mapped")
+    lines.append(f"FEN: {fen}")
+
+    y_pos = h - 14
+    for line in reversed(lines):
+        (tw, th_text), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, font_big, thick)
+        cv2.rectangle(vis, (5, y_pos - th_text - 8), (tw + 15, y_pos + 5), (0, 0, 0), -1)
+        text_color = (0, 255, 0) if "NOT" not in line else (0, 0, 255)
+        cv2.putText(vis, line, (10, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_big, text_color, thick, cv2.LINE_AA)
+        y_pos -= th_text + 14
 
     return vis
 
@@ -118,19 +160,45 @@ def main():
         sys.exit(1)
 
     image_rgb = frame[:, :, ::-1]
+
+    # Step 1: Run corner detection independently
     corners = detector._detect_corners(image_rgb)
+
+    # Step 2: Run piece detection independently (always, regardless of corners)
+    piece_results = detector.yolo.predict(image_rgb, conf=args.conf, verbose=False)
+    raw_detections = []
+    if len(piece_results) > 0 and len(piece_results[0].boxes) > 0:
+        for box in piece_results[0].boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            cls = int(box.cls[0])
+            conf = float(box.conf[0])
+            raw_detections.append({
+                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                "class": CLASS_NAMES[cls],
+                "piece": CLASS_TO_PIECE[cls],
+                "confidence": conf,
+            })
+
+    # Step 3: Run full FEN pipeline (maps pieces to squares if corners found)
     result = detector.detect_fen_with_metadata(image_rgb)
-
     fen = result["fen"]
-    pieces = result["pieces"]
+    mapped_pieces = result["pieces"]
 
+    print(f"Corners: {'detected' if corners is not None else 'NOT detected'}")
+    print(f"Raw YOLO detections: {len(raw_detections)}")
+    print(f"Mapped to squares: {len(mapped_pieces)}")
     print(f"FEN: {fen}")
-    print(f"Pieces: {len(pieces)}")
     if args.verbose:
-        for p in sorted(pieces, key=lambda x: x["square"]):
-            print(f"  {p['square']:>3s}  {p['class']:<16s} conf={p['confidence']:.3f}")
+        for det in raw_detections:
+            x1, y1, x2, y2 = det["bbox"]
+            print(f"  [{det['class']:<16s} conf={det['confidence']:.3f}] "
+                  f"bbox=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
+        if mapped_pieces:
+            print("Mapped pieces:")
+            for p in sorted(mapped_pieces, key=lambda x: x["square"]):
+                print(f"  {p['square']:>3s}  {p['class']:<16s} conf={p['confidence']:.3f}")
 
-    vis = draw_annotations(frame, corners, pieces, fen)
+    vis = draw_annotations(frame, corners, raw_detections, mapped_pieces, fen)
 
     out_path = args.output or args.image.with_stem(args.image.stem + "_fen_viz")
     cv2.imwrite(str(out_path), vis)
