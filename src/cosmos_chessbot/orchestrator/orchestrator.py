@@ -9,7 +9,10 @@ from typing import Optional
 
 import chess
 
-from ..vision import Camera, CameraConfig, CosmosPerception, BoardState, RemoteCosmosPerception
+from ..vision import (
+    Camera, CameraConfig, CosmosPerception, BoardState,
+    RemoteCosmosPerception, YOLODINOFenDetector,
+)
 from ..stockfish import StockfishEngine
 from ..reasoning import (
     ChessGameReasoning,
@@ -60,6 +63,18 @@ class OrchestratorConfig:
     color: str = "white"
     """Robot plays as 'white' or 'black'."""
 
+    # Perception configuration
+    perception_backend: str = "yolo"
+    """Perception backend: 'yolo' (YOLO26-DINO-MLP) or 'cosmos' (Cosmos-Reason2)"""
+    yolo_piece_weights: Optional[str] = None
+    """Path to YOLO26 piece detection weights."""
+    yolo_corner_weights: Optional[str] = None
+    """Path to YOLO26 corner pose detection weights."""
+    yolo_mlp_weights: Optional[str] = None
+    """Path to DINO-MLP classifier weights."""
+    static_corners: Optional[str] = None
+    """Path to static calibrated corners JSON (skips corner detection model)."""
+
 
 class ChessOrchestrator:
     """Main control loop for the chess manipulation system.
@@ -84,12 +99,23 @@ class ChessOrchestrator:
             )
         )
 
-        # Initialize Cosmos perception (local or remote)
-        if config.cosmos_server_url:
+        # Initialize perception backend
+        if config.perception_backend == "yolo":
+            logger.info("Using YOLO26-DINO-MLP perception backend")
+            self._yolo_detector = YOLODINOFenDetector(
+                yolo_weights=config.yolo_piece_weights or "runs/detect/yolo26_chess/weights/best.pt",
+                corner_weights=config.yolo_corner_weights or "runs/pose/board_corners/weights/best.pt",
+                mlp_weights=config.yolo_mlp_weights,
+                static_corners=config.static_corners,
+            )
+            self.perception = None  # FEN detection handled by _yolo_detector
+        elif config.cosmos_server_url:
             logger.info("Using remote Cosmos server at %s", config.cosmos_server_url)
+            self._yolo_detector = None
             self.perception = RemoteCosmosPerception(server_url=config.cosmos_server_url)
         else:
             logger.info("Using local Cosmos model: %s", config.cosmos_model)
+            self._yolo_detector = None
             self.perception = CosmosPerception(model_name=config.cosmos_model)
 
         # Initialize Stockfish
@@ -155,11 +181,19 @@ class ChessOrchestrator:
         """Extract board state from egocentric camera.
 
         Args:
-            overhead_image: PIL Image from egocentric camera
+            overhead_image: PIL Image or numpy array from egocentric camera
 
         Returns:
             BoardState with FEN, confidence, and anomalies
         """
+        if self._yolo_detector is not None:
+            import numpy as np
+            if not isinstance(overhead_image, np.ndarray):
+                image_np = np.array(overhead_image)
+            else:
+                image_np = overhead_image
+            fen = self._yolo_detector.detect_fen(image_np)
+            return BoardState(fen=fen, confidence=1.0, anomalies=[], raw_response="")
         return self.perception.perceive(overhead_image)
 
     def plan(self, board_state: BoardState) -> str:
@@ -356,10 +390,7 @@ class ChessOrchestrator:
                 print(f"  Physical issues: {goal_verification.physical_issues}")
 
         # Stage 2: FEN comparison
-        if vision_backend == "cosmos":
-            actual_state = self.perceive(overhead)
-        else:
-            actual_state = self.perceive(overhead)
+        actual_state = self.perceive(overhead)
 
         fen_comparison = compare_fen_states(expected_fen, actual_state.fen)
 

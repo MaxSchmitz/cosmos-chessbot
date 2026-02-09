@@ -1,107 +1,36 @@
 # Model Files
 
-This directory contains the model files needed for FEN detection.
+This directory contains model weights for the YOLO26-DINO-MLP FEN detection pipeline.
 
-## Required Models
+## Current Models
 
-### 1. Ultimate V2 Board Segmentation (ONNX)
+### 1. YOLO26 Piece Detection
 
-**Purpose:** Fast chess board detection and segmentation
-**Speed:** ~15ms on CPU
-**Size:** 2.09MB
+Detects chess piece bounding boxes (12 classes: white/black x pawn/rook/knight/bishop/queen/king).
 
-**Download:**
-```bash
-# Download from Hugging Face
-wget https://huggingface.co/yamero999/ultimate-v2-chess-onnx/resolve/main/ultimate_v2_breakthrough_accurate.onnx
+**Weights:** `../runs/detect/yolo26_chess/weights/best.pt`
+**Training script:** `scripts/training/train_yolo26_pieces.py`
 
-# Or use huggingface-cli
-huggingface-cli download yamero999/ultimate-v2-chess-onnx ultimate_v2_breakthrough_accurate.onnx --local-dir .
-```
+### 2. YOLO26 Corner Pose Detection
 
-**Expected file:**
-- `models/ultimate_v2_breakthrough_accurate.onnx`
+Detects the 4 board corners as keypoints for homography computation.
 
-### 2. YOLO Chess Piece Detection
+**Weights:** `../runs/pose/board_corners/weights/best.pt`
+**Training script:** `scripts/training/train_yolo26_corners.py`
 
-**Purpose:** Detect and classify chess pieces on the board
-**Classes:** 12 (white/black × pawn/rook/knight/bishop/queen/king)
+### 3. DINO-MLP Piece Classifier
 
-**Download:**
-```bash
-# Download from Hugging Face
-wget https://huggingface.co/dopaul/chessboard-detector/resolve/main/best.pt -O chess_piece_yolo.pt
+Re-classifies detected pieces using DINO ViT-S/16 features + 3-layer MLP for 99%+ accuracy.
 
-# Or use huggingface-cli
-huggingface-cli download dopaul/chessboard-detector best.pt --local-dir .
-mv best.pt chess_piece_yolo.pt
-```
+**Weights:** `models/dino_mlp/dino_mlp_best.pth`
+**Training script:** `scripts/training/train_dino_mlp_classifier.py`
 
-**Expected file:**
-- `models/chess_piece_yolo.pt`
-
-## Quick Setup
+## Evaluation
 
 ```bash
-cd models/
+# Evaluate FEN detection accuracy on ChessReD2k test set
+python scripts/evaluation/evaluate_fen_accuracy.py --visualize
 
-# Download Ultimate V2 ONNX
-wget https://huggingface.co/yamero999/ultimate-v2-chess-onnx/resolve/main/ultimate_v2_breakthrough_accurate.onnx
-
-# Download YOLO piece detector
-wget https://huggingface.co/dopaul/chessboard-detector/resolve/main/best.pt -O chess_piece_yolo.pt
-
-# Verify files
-ls -lh
+# Benchmark YOLO-only vs YOLO-DINO
+python scripts/evaluation/benchmark_fen_detectors.py
 ```
-
-Expected output:
-```
-ultimate_v2_breakthrough_accurate.onnx  (2.1MB)
-chess_piece_yolo.pt                     (varies)
-```
-
-## Alternative: Using Hugging Face CLI
-
-```bash
-pip install huggingface_hub[cli]
-
-# Download both models
-huggingface-cli download yamero999/ultimate-v2-chess-onnx ultimate_v2_breakthrough_accurate.onnx --local-dir models/
-huggingface-cli download dopaul/chessboard-detector best.pt --local-dir models/
-mv models/best.pt models/chess_piece_yolo.pt
-```
-
-## Model Info
-
-### Ultimate V2 ONNX
-- **Model Card:** https://huggingface.co/yamero999/ultimate-v2-chess-onnx
-- **License:** Apache 2.0
-- **Input:** 256x256 RGB image
-- **Output:** 256x256 segmentation mask
-
-### YOLO Piece Detector
-- **Model Card:** https://huggingface.co/dopaul/chessboard-detector
-- **Framework:** Ultralytics YOLOv8/v11
-- **Input:** Variable size image
-- **Output:** Bounding boxes + class labels
-
-## Troubleshooting
-
-**Models not found error:**
-```
-FileNotFoundError: models/ultimate_v2_breakthrough_accurate.onnx not found
-```
-Solution: Download the models using commands above
-
-**Import error:**
-```
-ImportError: ultralytics not found
-```
-Solution: `pip install ultralytics`
-
-**ONNX error:**
-```
-ImportError: onnxruntime not found
-```
-Solution: `pip install onnxruntime`
