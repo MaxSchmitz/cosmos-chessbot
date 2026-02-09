@@ -702,7 +702,7 @@ class DatasetConfig:
 
     def __init__(self, config_path: Path = None):
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "config" / "dataset_generation.yaml"
+            config_path = Path(__file__).parent.parent.parent / "config" / "dataset_generation.yaml"
 
         if HAVE_YAML and config_path.exists():
             with open(config_path) as f:
@@ -1003,7 +1003,7 @@ class VALUEHybridGenerator:
 
     def _discover_floor_textures(self) -> list[tuple[str, str]]:
         """Discover available floor textures at startup."""
-        textures_dir = Path(__file__).parent.parent / "data" / "textures" / "floors"
+        textures_dir = Path(__file__).parent.parent.parent / "data" / "textures" / "floors"
 
         textures = []
         if textures_dir.exists():
@@ -1175,7 +1175,7 @@ class VALUEHybridGenerator:
             texture_file, texture_name = self.floor_textures[
                 np.random.randint(len(self.floor_textures))
             ]
-            texture_path = Path(__file__).parent.parent / "data" / "textures" / "floors" / texture_file
+            texture_path = Path(__file__).parent.parent.parent / "data" / "textures" / "floors" / texture_file
             logger.debug(f"Selected floor texture: {texture_name}")
         else:
             texture_file, texture_name = None, None
