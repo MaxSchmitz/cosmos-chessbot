@@ -2,6 +2,7 @@
 
 from .game_reasoning import (
     ChessGameReasoning,
+    EpisodeCritique,
     GameState,
     MoveDetection,
     CorrectionPlan,
@@ -22,6 +23,7 @@ from .fen_comparison import (
 
 __all__ = [
     "ChessGameReasoning",
+    "EpisodeCritique",
     "GameState",
     "MoveDetection",
     "CorrectionPlan",

@@ -64,6 +64,17 @@ parser.add_argument("--resume", type=Path, default=None,
 parser.add_argument("--wandb", action="store_true", help="Log to wandb")
 parser.add_argument("--project", type=str, default="cosmos-chess-rl",
                     help="wandb project name")
+# Reason2 critic
+parser.add_argument("--reason2-critic", action="store_true",
+                    help="Enable Cosmos Reason2 episode critic")
+parser.add_argument("--cosmos-server", type=str, default="http://localhost:8000",
+                    help="URL of the Cosmos inference server")
+parser.add_argument("--critic-weight", type=float, default=10.0,
+                    help="Reward scale for Reason2 critic scores")
+parser.add_argument("--critic-frequency", type=float, default=0.1,
+                    help="Fraction of episodes to evaluate with Reason2 (0.0-1.0)")
+parser.add_argument("--critic-render-interval", type=int, default=5,
+                    help="Capture camera frame every N control steps")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True  # required for TiledCamera sensors
@@ -78,6 +89,7 @@ from torch.distributions import Normal
 
 from cosmos_chessbot.isaac.chess_env import ChessPickPlaceEnv
 from cosmos_chessbot.isaac.chess_env_cfg import ChessPickPlaceEnvCfg
+from cosmos_chessbot.isaac.reason2_critic import Reason2Critic
 
 
 class ActorCritic(nn.Module):
@@ -282,6 +294,22 @@ def main():
         except ImportError:
             print("  WARNING: wandb not installed, skipping logging")
 
+    # -- Reason2 critic -------------------------------------------------------
+    critic = None
+    if args.reason2_critic:
+        print(f"\n  Reason2 critic enabled:")
+        print(f"    server:          {args.cosmos_server}")
+        print(f"    weight:          {args.critic_weight}")
+        print(f"    frequency:       {args.critic_frequency}")
+        print(f"    render_interval: {args.critic_render_interval}")
+        critic = Reason2Critic(
+            server_url=args.cosmos_server,
+            weight=args.critic_weight,
+            frequency=args.critic_frequency,
+            render_interval=args.critic_render_interval,
+            num_envs=N,
+        )
+
     # -- Rollout storage -----------------------------------------------------
     # Pre-allocate tensors for rollout collection
     buf_obs = torch.zeros((T, N, obs_dim), device=device)
@@ -344,6 +372,12 @@ def main():
             done = terminated | truncated
             buf_dones[t] = done.float()
 
+            # Capture camera frames for Reason2 critic
+            if critic is not None:
+                camera_rgb = env.get_camera_rgb()
+                if camera_rgb is not None:
+                    critic.capture_frame(camera_rgb, t)
+
             # Track per-env episode returns
             env_ep_return += reward
             for i in range(N):
@@ -355,6 +389,13 @@ def main():
                     episode_return_count += 1
                     env_ep_return[i] = 0.0
 
+                    # Notify critic of episode completion
+                    if critic is not None:
+                        critic.on_episode_done(
+                            env_idx=i,
+                            terminal_step_idx=t * N + i,
+                        )
+
             global_step += N
 
         # -- Compute advantages (GAE) ---------------------------------------
@@ -365,6 +406,16 @@ def main():
             )
             next_obs_tensor = obs_normalizer.normalize(next_obs_tensor)
             _, _, next_value = policy(next_obs_tensor)
+
+        # -- Reason2 critic: evaluate pending episodes and inject rewards -----
+        if critic is not None and critic.pending_count > 0:
+            critic_results = critic.evaluate_pending()
+            for step_idx, critic_reward, critique in critic_results:
+                # step_idx encodes (t * N + env_i)
+                t_idx = step_idx // N
+                env_i = step_idx % N
+                if 0 <= t_idx < T and 0 <= env_i < N:
+                    buf_rewards[t_idx, env_i] += critic_reward
 
         advantages, returns = compute_gae(
             buf_rewards, buf_values, buf_dones,
@@ -461,6 +512,10 @@ def main():
                 sum(ep_returns_history[-20:]) / max(1, len(ep_returns_history[-20:]))
             )
 
+            critic_info = ""
+            if critic is not None and critic.total_critiques > 0:
+                critic_info = f" | Critic score: {critic.mean_score:.1f}/10 ({critic.total_critiques} evals)"
+
             print(
                 f"  Step {global_step:>7d}/{args.num_steps} | "
                 f"FPS: {fps:.0f} | "
@@ -469,21 +524,26 @@ def main():
                 f"P_loss: {avg_policy_loss:.4f} | "
                 f"V_loss: {avg_value_loss:.4f} | "
                 f"Entropy: {avg_entropy:.4f}"
+                f"{critic_info}"
             )
 
+            log_data = {
+                "step": global_step,
+                "fps": fps,
+                "episode_count": episode_count,
+                "mean_episode_return": mean_ep_return,
+                "policy_loss": avg_policy_loss,
+                "value_loss": avg_value_loss,
+                "entropy": avg_entropy,
+            }
+            if critic is not None and critic.total_critiques > 0:
+                log_data["critic/mean_score"] = critic.mean_score
+                log_data["critic/total_critiques"] = critic.total_critiques
+                for issue, count in critic.issue_counts.items():
+                    log_data[f"critic/issues/{issue}"] = count
+
             if wandb_run:
-                wandb_run.log(
-                    {
-                        "step": global_step,
-                        "fps": fps,
-                        "episode_count": episode_count,
-                        "mean_episode_return": mean_ep_return,
-                        "policy_loss": avg_policy_loss,
-                        "value_loss": avg_value_loss,
-                        "entropy": avg_entropy,
-                    },
-                    step=global_step,
-                )
+                wandb_run.log(log_data, step=global_step)
 
         # -- Track for plotting and early stopping ---------------------------
         plot_steps.append(global_step)

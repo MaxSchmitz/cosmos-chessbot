@@ -149,6 +149,36 @@ Provide your trajectory as a JSON object:
 }}
 """
 
+    EPISODE_CRITIQUE_PROMPT = """Watch this video of a robot arm executing a chess piece pick-and-place task.
+The robot is attempting to pick up a {piece_type} from {from_square} and place it on {to_square}.
+
+Evaluate the entire execution:
+1. Approach: Did the gripper approach the piece safely without hitting other pieces?
+2. Grasp: Was the grasp stable? Did the piece slip or rotate during pickup?
+3. Lift: Was the lift smooth? Was the piece raised to a safe clearance height?
+4. Transport: Did the trajectory avoid obstacles? Were adjacent pieces at risk?
+5. Placement: Was the placement gentle and stable? Is the piece upright?
+6. Collateral: Were any non-target pieces disturbed at any point?
+
+Rate the overall execution quality from 0 to 10, where:
+- 0: Complete failure (piece dropped, wrong location, major collision)
+- 5: Partial success (reached target but with issues)
+- 10: Perfect execution (smooth, safe, precise)
+
+Provide your evaluation in JSON:
+{{
+    "overall_score": 0-10,
+    "success": true or false,
+    "approach_safe": true or false,
+    "grasp_stable": true or false,
+    "trajectory_safe": true or false,
+    "placement_stable": true or false,
+    "physical_issues": ["list of specific issues"],
+    "confidence": 0.0-1.0,
+    "reasoning": "step-by-step evaluation"
+}}
+"""
+
     GOAL_VERIFICATION_PROMPT = """I just attempted to execute a chess move: {move_uci}
 I picked up the {piece_type} from {from_square} and tried to place it on {to_square}.
 
@@ -788,6 +818,112 @@ Provide your analysis in JSON:
 
         return self._parse_goal_verification(output_text)
 
+    def critique_episode(
+        self,
+        video_frames: list[Image.Image],
+        from_square: str,
+        to_square: str,
+        piece_type: str = "piece",
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+    ) -> "EpisodeCritique":
+        """Critique a full RL episode from video frames.
+
+        Watches the entire pick-and-place execution and evaluates approach
+        safety, grasp stability, trajectory quality, and placement precision.
+
+        Args:
+            video_frames: Ordered frames from the episode
+            from_square: Source square
+            to_square: Target square
+            piece_type: Type of piece being moved
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+
+        Returns:
+            EpisodeCritique with score and detailed evaluation
+        """
+        prompt = self.EPISODE_CRITIQUE_PROMPT.format(
+            from_square=from_square,
+            to_square=to_square,
+            piece_type=piece_type,
+        )
+
+        conversation = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video", "video": video_frames},
+                    {"type": "text", "text": prompt},
+                ],
+            },
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return self._parse_episode_critique(output_text)
+
+    def _parse_episode_critique(self, response: str) -> "EpisodeCritique":
+        """Parse Cosmos response into EpisodeCritique."""
+        data = extract_json(response)
+
+        if data is not None:
+            try:
+                return EpisodeCritique(
+                    overall_score=float(data.get("overall_score", 0.0)),
+                    success=data.get("success", False),
+                    approach_safe=data.get("approach_safe", False),
+                    grasp_stable=data.get("grasp_stable", False),
+                    trajectory_safe=data.get("trajectory_safe", False),
+                    placement_stable=data.get("placement_stable", False),
+                    physical_issues=data.get("physical_issues", []),
+                    confidence=float(data.get("confidence", 0.0)),
+                    reasoning=data.get("reasoning", response),
+                )
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
+        # Fallback
+        return EpisodeCritique(
+            overall_score=0.0,
+            success=False,
+            approach_safe=False,
+            grasp_stable=False,
+            trajectory_safe=False,
+            placement_stable=False,
+            physical_issues=["parse_failure"],
+            confidence=0.0,
+            reasoning=response,
+        )
+
     def _parse_trajectory_plan(self, response: str, move_uci: str) -> "TrajectoryPlan":
         """Parse Cosmos response into TrajectoryPlan."""
         data = extract_json(response)
@@ -935,3 +1071,35 @@ class GoalVerification:
 
     reasoning: str
     """Step-by-step reasoning from Cosmos."""
+
+
+@dataclass
+class EpisodeCritique:
+    """Critique of a full RL episode from video."""
+
+    overall_score: float
+    """Overall execution quality score (0-10)."""
+
+    success: bool
+    """Whether the task was completed successfully."""
+
+    approach_safe: bool
+    """Whether the approach phase avoided collisions."""
+
+    grasp_stable: bool
+    """Whether the grasp was stable throughout."""
+
+    trajectory_safe: bool
+    """Whether the transport trajectory was safe."""
+
+    placement_stable: bool
+    """Whether the placement was gentle and stable."""
+
+    physical_issues: list[str]
+    """Specific physical issues detected."""
+
+    confidence: float
+    """Confidence in the critique (0.0-1.0)."""
+
+    reasoning: str
+    """Step-by-step evaluation from Cosmos."""

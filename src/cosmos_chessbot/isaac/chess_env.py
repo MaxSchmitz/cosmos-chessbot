@@ -986,3 +986,23 @@ class ChessPickPlaceEnv(SingleArmTaskDirectEnv):
             self._target_piece_pos - self._target_square_pos, dim=-1
         )
         return piece_to_target < self.cfg.placement_tolerance
+
+    # ------------------------------------------------------------------ #
+    # Camera access (for Reason2 critic)
+    # ------------------------------------------------------------------ #
+
+    def get_camera_rgb(self) -> Optional[torch.Tensor]:
+        """Read RGB data from the front camera.
+
+        Returns (num_envs, H, W, 3) float32 tensor in [0, 1], or None if
+        camera data is unavailable.
+        """
+        try:
+            camera = self.scene["front"]
+            rgb = camera.data.output["rgb"]
+            # TiledCamera returns (N, H, W, 4) RGBA float32 — take RGB
+            if rgb is not None and rgb.numel() > 0:
+                return rgb[:, :, :, :3]
+        except (KeyError, AttributeError, RuntimeError):
+            pass
+        return None

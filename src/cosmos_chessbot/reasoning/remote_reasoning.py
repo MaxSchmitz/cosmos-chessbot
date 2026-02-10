@@ -16,6 +16,7 @@ from PIL import Image
 from .game_reasoning import (
     ActionReasoning,
     CorrectionPlan,
+    EpisodeCritique,
     GameState,
     GoalVerification,
     MoveDetection,
@@ -246,6 +247,42 @@ class RemoteChessGameReasoning:
         return GoalVerification(
             success=data.get("success", False),
             reason=data.get("reason", ""),
+            physical_issues=data.get("physical_issues", []),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", ""),
+        )
+
+    def critique_episode(
+        self,
+        video_frames: list[Image.Image],
+        from_square: str,
+        to_square: str,
+        piece_type: str = "piece",
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+    ) -> EpisodeCritique:
+        """Critique a full RL episode via remote server."""
+        response = self.client.post(
+            f"{self.server_url}/reason/critique_episode",
+            json={
+                "frames_base64": _encode_images(video_frames),
+                "from_square": from_square,
+                "to_square": to_square,
+                "piece_type": piece_type,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return EpisodeCritique(
+            overall_score=float(data.get("overall_score", 0.0)),
+            success=data.get("success", False),
+            approach_safe=data.get("approach_safe", False),
+            grasp_stable=data.get("grasp_stable", False),
+            trajectory_safe=data.get("trajectory_safe", False),
+            placement_stable=data.get("placement_stable", False),
             physical_issues=data.get("physical_issues", []),
             confidence=float(data.get("confidence", 0.0)),
             reasoning=data.get("reasoning", ""),

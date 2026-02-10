@@ -102,6 +102,16 @@ class CorrectionRequest(BaseModel):
     temperature: float = 0.1
 
 
+class EpisodeCritiqueRequest(BaseModel):
+    """Request for episode video critique (RL critic)."""
+    frames_base64: list[str]
+    from_square: str
+    to_square: str
+    piece_type: str = "piece"
+    max_new_tokens: int = 1024
+    temperature: float = 0.1
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -334,6 +344,37 @@ async def reason_correction(request: CorrectionRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Correction planning failed: {e}")
+
+
+@app.post("/reason/critique_episode")
+async def reason_critique_episode(request: EpisodeCritiqueRequest):
+    """Critique a full RL episode from video frames."""
+    if reasoning is None:
+        raise HTTPException(status_code=503, detail="Reasoning model not loaded")
+
+    try:
+        frames = _decode_images(request.frames_base64)
+        result = reasoning.critique_episode(
+            video_frames=frames,
+            from_square=request.from_square,
+            to_square=request.to_square,
+            piece_type=request.piece_type,
+            max_new_tokens=request.max_new_tokens,
+            temperature=request.temperature,
+        )
+        return {
+            "overall_score": result.overall_score,
+            "success": result.success,
+            "approach_safe": result.approach_safe,
+            "grasp_stable": result.grasp_stable,
+            "trajectory_safe": result.trajectory_safe,
+            "placement_stable": result.placement_stable,
+            "physical_issues": result.physical_issues,
+            "confidence": result.confidence,
+            "reasoning": result.reasoning,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Episode critique failed: {e}")
 
 
 def main():

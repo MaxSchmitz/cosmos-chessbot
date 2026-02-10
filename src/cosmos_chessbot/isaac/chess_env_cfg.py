@@ -98,6 +98,9 @@ class ChessPickPlaceEnvCfg(SingleArmTaskDirectEnvCfg):
     # -- FEN dataset (JSONL with conversations containing FEN strings) -------
     fen_dataset_path: str = "data/chess_fen_train.jsonl"
 
+    # -- Reason2 critic (episode video evaluation) ----------------------------
+    critic_render_interval: int = 5  # capture camera frame every N control steps
+
     # -- PhysX GPU buffers (64 envs × 32 pieces = 2048 rigid bodies) ----------
     sim: SimulationCfg = SimulationCfg(
         physx=PhysxCfg(
