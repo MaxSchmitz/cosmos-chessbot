@@ -76,225 +76,89 @@ FEN_TO_PIECE = {
     'k': 'k',
 }
 
+# STL filename to FEN piece type mapping
+STL_TO_FEN = {
+    "pawn": "P", "rook": "R", "knight": "N",
+    "bishop": "B", "queen": "Q", "king": "K",
+}
+
 # Piece material schemes with realistic material properties
 PIECE_COLOR_SCHEMES = [
-    # Plastic pieces - matte finish
+    # -- Plastic sets (tournament / club standard) --
     {
-        "name": "plastic_white_black",
+        "name": "plastic_cream_black",
         "type": "plastic",
-        "white": (0.95, 0.95, 0.95, 1.0),
-        "black": (0.02, 0.02, 0.02, 1.0),
-        "roughness": (0.4, 0.6),
+        "white": (0.95, 0.92, 0.85, 1.0),  # Cream/ivory
+        "black": (0.05, 0.05, 0.05, 1.0),  # Black
+        "roughness": (0.45, 0.6),
         "metallic": 0.0,
         "specular": 0.3,
     },
-    {
-        "name": "plastic_ivory",
-        "type": "plastic",
-        "white": (0.9, 0.85, 0.7, 1.0),
-        "black": (0.2, 0.15, 0.1, 1.0),
-        "roughness": (0.4, 0.6),
-        "metallic": 0.0,
-        "specular": 0.3,
-    },
-    # Wood pieces - medium roughness
-    {
-        "name": "wood_light",
-        "type": "wood",
-        "white": (0.7, 0.5, 0.3, 1.0),
-        "black": (0.3, 0.2, 0.1, 1.0),
-        "roughness": (0.5, 0.7),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    {
-        "name": "wood_dark",
-        "type": "wood",
-        "white": (0.85, 0.8, 0.7, 1.0),
-        "black": (0.4, 0.3, 0.2, 1.0),
-        "roughness": (0.5, 0.7),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    # Stone/Marble - polished finish
-    {
-        "name": "marble_white",
-        "type": "stone",
-        "white": (0.95, 0.95, 0.95, 1.0),
-        "black": (0.15, 0.15, 0.15, 1.0),
-        "roughness": (0.1, 0.3),
-        "metallic": 0.0,
-        "specular": 0.6,
-    },
-    {
-        "name": "marble_onyx",
-        "type": "stone",
-        "white": (0.9, 0.88, 0.85, 1.0),
-        "black": (0.05, 0.05, 0.05, 1.0),
-        "roughness": (0.1, 0.3),
-        "metallic": 0.0,
-        "specular": 0.6,
-    },
-    # Metal pieces - shiny
-    {
-        "name": "metal_silver_bronze",
-        "type": "metal",
-        "white": (0.75, 0.75, 0.75, 1.0),
-        "black": (0.5, 0.35, 0.2, 1.0),
-        "roughness": (0.15, 0.3),
-        "metallic": 0.8,
-        "specular": 0.7,
-    },
-    {
-        "name": "metal_gold_black",
-        "type": "metal",
-        "white": (0.8, 0.65, 0.3, 1.0),
-        "black": (0.15, 0.15, 0.15, 1.0),
-        "roughness": (0.15, 0.3),
-        "metallic": 0.7,
-        "specular": 0.7,
-    },
-    # Painted pieces - semi-glossy
-    {
-        "name": "painted_red_black",
-        "type": "painted",
-        "white": (0.7, 0.2, 0.2, 1.0),
-        "black": (0.1, 0.1, 0.1, 1.0),
-        "roughness": (0.3, 0.5),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    {
-        "name": "painted_blue_black",
-        "type": "painted",
-        "white": (0.3, 0.4, 0.7, 1.0),
-        "black": (0.1, 0.1, 0.1, 1.0),
-        "roughness": (0.3, 0.5),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    {
-        "name": "painted_green_black",
-        "type": "painted",
-        "white": (0.4, 0.6, 0.4, 1.0),
-        "black": (0.1, 0.1, 0.1, 1.0),
-        "roughness": (0.3, 0.5),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    # More wood varieties
-    {
-        "name": "wood_maple_walnut",
-        "type": "wood",
-        "white": (0.85, 0.75, 0.6, 1.0),  # Light maple
-        "black": (0.35, 0.25, 0.2, 1.0),  # Dark walnut
-        "roughness": (0.5, 0.7),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    {
-        "name": "wood_cherry_ebony",
-        "type": "wood",
-        "white": (0.65, 0.35, 0.25, 1.0),  # Cherry red
-        "black": (0.15, 0.12, 0.1, 1.0),   # Ebony
-        "roughness": (0.5, 0.7),
-        "metallic": 0.0,
-        "specular": 0.4,
-    },
-    # Colored stone/marble
-    {
-        "name": "marble_green",
-        "type": "stone",
-        "white": (0.85, 0.9, 0.85, 1.0),   # White marble
-        "black": (0.2, 0.4, 0.3, 1.0),     # Green marble
-        "roughness": (0.1, 0.3),
-        "metallic": 0.0,
-        "specular": 0.6,
-    },
-    {
-        "name": "marble_red",
-        "type": "stone",
-        "white": (0.9, 0.88, 0.85, 1.0),   # Cream marble
-        "black": (0.45, 0.2, 0.2, 1.0),    # Red marble
-        "roughness": (0.1, 0.3),
-        "metallic": 0.0,
-        "specular": 0.6,
-    },
-    # More metal combinations
-    {
-        "name": "metal_brass_steel",
-        "type": "metal",
-        "white": (0.7, 0.6, 0.3, 1.0),     # Brass
-        "black": (0.6, 0.6, 0.65, 1.0),    # Steel
-        "roughness": (0.15, 0.3),
-        "metallic": 0.75,
-        "specular": 0.7,
-    },
-    {
-        "name": "metal_copper_iron",
-        "type": "metal",
-        "white": (0.72, 0.45, 0.2, 1.0),   # Copper
-        "black": (0.35, 0.35, 0.4, 1.0),   # Dark iron
-        "roughness": (0.2, 0.35),
-        "metallic": 0.7,
-        "specular": 0.6,
-    },
-    # Modern colored plastic
     {
         "name": "plastic_cream_brown",
         "type": "plastic",
         "white": (0.95, 0.9, 0.8, 1.0),    # Cream
-        "black": (0.5, 0.35, 0.25, 1.0),   # Brown
+        "black": (0.45, 0.3, 0.2, 1.0),    # Brown
         "roughness": (0.4, 0.6),
         "metallic": 0.0,
         "specular": 0.3,
     },
+    # -- Wood sets (the most common real-world material) --
+    # white_texture/black_texture reference dirs in data/textures/pieces/
     {
-        "name": "plastic_gray_charcoal",
-        "type": "plastic",
-        "white": (0.7, 0.7, 0.7, 1.0),     # Light gray
-        "black": (0.25, 0.25, 0.25, 1.0),  # Charcoal
-        "roughness": (0.4, 0.6),
-        "metallic": 0.0,
-        "specular": 0.3,
-    },
-    # Colorful modern sets
-    {
-        "name": "painted_orange_purple",
-        "type": "painted",
-        "white": (0.85, 0.45, 0.2, 1.0),   # Orange
-        "black": (0.4, 0.2, 0.5, 1.0),     # Purple
-        "roughness": (0.3, 0.5),
+        "name": "wood_boxwood_sheesham",
+        "type": "wood",
+        "white": (0.82, 0.72, 0.52, 1.0),  # Boxwood (pale golden)
+        "black": (0.42, 0.25, 0.15, 1.0),  # Sheesham/rosewood (warm brown)
+        "white_texture": "boxwood",
+        "black_texture": "walnut",
+        "roughness": (0.5, 0.7),
         "metallic": 0.0,
         "specular": 0.4,
     },
     {
-        "name": "painted_yellow_navy",
-        "type": "painted",
-        "white": (0.9, 0.8, 0.3, 1.0),     # Yellow
-        "black": (0.1, 0.15, 0.3, 1.0),    # Navy blue
-        "roughness": (0.3, 0.5),
+        "name": "wood_boxwood_ebonized",
+        "type": "wood",
+        "white": (0.82, 0.72, 0.52, 1.0),  # Boxwood
+        "black": (0.08, 0.07, 0.06, 1.0),  # Ebonized boxwood (near-black)
+        "white_texture": "boxwood",
+        "black_texture": "rosewood",
+        "roughness": (0.5, 0.7),
         "metallic": 0.0,
         "specular": 0.4,
     },
     {
-        "name": "painted_pink_teal",
-        "type": "painted",
-        "white": (0.9, 0.5, 0.6, 1.0),     # Pink
-        "black": (0.2, 0.5, 0.5, 1.0),     # Teal
-        "roughness": (0.3, 0.5),
+        "name": "wood_maple_walnut",
+        "type": "wood",
+        "white": (0.85, 0.75, 0.6, 1.0),   # Maple (light)
+        "black": (0.32, 0.22, 0.15, 1.0),  # Walnut (dark brown)
+        "white_texture": "maple",
+        "black_texture": "walnut",
+        "roughness": (0.5, 0.7),
         "metallic": 0.0,
         "specular": 0.4,
     },
-    # Tournament style
     {
-        "name": "plastic_tournament",
-        "type": "plastic",
-        "white": (0.98, 0.98, 0.95, 1.0),  # Off-white
-        "black": (0.08, 0.08, 0.08, 1.0),  # Near black
-        "roughness": (0.5, 0.65),
+        "name": "wood_boxwood_rosewood",
+        "type": "wood",
+        "white": (0.80, 0.70, 0.50, 1.0),  # Boxwood (slightly darker)
+        "black": (0.35, 0.18, 0.12, 1.0),  # Rosewood (deep reddish-brown)
+        "white_texture": "boxwood",
+        "black_texture": "rosewood",
+        "roughness": (0.45, 0.65),
         "metallic": 0.0,
-        "specular": 0.25,
+        "specular": 0.45,
+    },
+    {
+        "name": "wood_ebony_boxwood",
+        "type": "wood",
+        "white": (0.88, 0.78, 0.58, 1.0),  # Light boxwood
+        "black": (0.12, 0.10, 0.08, 1.0),  # Ebony (very dark)
+        "white_texture": "maple",
+        "black_texture": "rosewood",
+        "roughness": (0.45, 0.65),
+        "metallic": 0.0,
+        "specular": 0.45,
     },
 ]
 
@@ -990,6 +854,9 @@ class VALUEHybridGenerator:
         for piece_type, pieces in self.available_pieces.items():
             logger.debug(f"  {piece_type}: {len(pieces)} pieces")
 
+        # Load piece mesh sets from data/piece_meshes/
+        self.piece_mesh_sets = self._load_piece_mesh_sets()
+
         # Load HDRIs if available
         self.hdris = []
         if hdri_dir and hdri_dir.exists():
@@ -1019,6 +886,170 @@ class VALUEHybridGenerator:
         logger.info(f"Loaded {len(textures)} floor textures")
         return textures
 
+    def _load_piece_mesh_sets(self) -> dict:
+        """Load piece mesh sets from data/piece_meshes/ and the existing VALUE pieces.
+
+        Returns:
+            Dict mapping set name to dict of piece type -> mesh data, e.g.:
+            {"value": {"P": Mesh, "N": Mesh, ...}, "staunton": {...}, ...}
+        """
+        meshes_dir = Path(__file__).parent.parent.parent / "data" / "piece_meshes"
+
+        # Record reference heights from VALUE pieces (already in the blend file)
+        # VALUE pieces are Y-up (Y is the height/vertical axis)
+        ref_objects = {'P': 'P0', 'N': 'N0', 'B': 'B0', 'R': 'R0', 'Q': 'Q0', 'K': 'K0'}
+        reference_heights = {}
+        for piece_char, obj_name in ref_objects.items():
+            if obj_name in bpy.data.objects:
+                obj = bpy.data.objects[obj_name]
+                bbox = [Vector(c) for c in obj.bound_box]
+                height = max(c.y for c in bbox) - min(c.y for c in bbox)
+                reference_heights[piece_char] = height
+                logger.debug(f"  Reference {piece_char} height (Y-up): {height:.4f}m")
+
+        if not reference_heights:
+            logger.warning("No reference piece objects found, skipping mesh set loading")
+            return {}
+
+        # Store VALUE set from existing blend file objects
+        sets = {}
+        value_meshes = {}
+        for piece_char, obj_name in ref_objects.items():
+            if obj_name in bpy.data.objects:
+                value_meshes[piece_char] = bpy.data.objects[obj_name].data
+        if value_meshes:
+            sets["value"] = value_meshes
+            logger.info(f"Registered 'value' piece set (from blend file)")
+
+        # Import STL sets
+        if not meshes_dir.exists():
+            logger.warning(f"Piece meshes directory not found: {meshes_dir}")
+            return sets
+
+        for set_dir in sorted(meshes_dir.iterdir()):
+            if not set_dir.is_dir():
+                continue
+            set_name = set_dir.name
+            if set_name == "value":
+                continue  # Already registered from blend file
+
+            set_meshes = {}
+            for stl_file in sorted(set_dir.glob("*.stl")):
+                piece_name = stl_file.stem.lower()
+                piece_char = STL_TO_FEN.get(piece_name)
+                if not piece_char:
+                    logger.warning(f"  Unknown piece file: {stl_file.name}")
+                    continue
+                if piece_char not in reference_heights:
+                    continue
+
+                # Import STL -- creates a temporary object
+                bpy.ops.wm.stl_import(filepath=str(stl_file))
+                tmp_obj = bpy.context.selected_objects[0]
+                mesh = tmp_obj.data
+
+                # Fix orientation: VALUE pieces are Y-up, so rotate imported
+                # meshes so that the tallest axis becomes Y
+                bbox = [Vector(c) for c in tmp_obj.bound_box]
+                extents = {
+                    'x': max(c.x for c in bbox) - min(c.x for c in bbox),
+                    'y': max(c.y for c in bbox) - min(c.y for c in bbox),
+                    'z': max(c.z for c in bbox) - min(c.z for c in bbox),
+                }
+                tallest = max(extents, key=extents.get)
+
+                if tallest == 'z':
+                    # Z-up -> Y-up: rotate 90 degrees around X
+                    for v in mesh.vertices:
+                        old_y, old_z = v.co.y, v.co.z
+                        v.co.y = old_z
+                        v.co.z = -old_y
+                    logger.debug(f"  {piece_name}: rotated Z-up -> Y-up")
+                elif tallest == 'x':
+                    # X-up -> Y-up: rotate -90 degrees around Z
+                    for v in mesh.vertices:
+                        old_x, old_y = v.co.x, v.co.y
+                        v.co.x = old_y
+                        v.co.y = old_x
+                    logger.debug(f"  {piece_name}: rotated X-up -> Y-up")
+
+                # Recompute bbox after rotation (Y is now height)
+                xs = [v.co.x for v in mesh.vertices]
+                ys = [v.co.y for v in mesh.vertices]
+                zs = [v.co.z for v in mesh.vertices]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                min_z, max_z = min(zs), max(zs)
+                imported_height = max_y - min_y
+
+                # Auto-scale to match VALUE piece dimensions
+                if imported_height > 0:
+                    scale = reference_heights[piece_char] / imported_height
+                    cx = (min_x + max_x) / 2
+                    cz = (min_z + max_z) / 2
+
+                    for v in mesh.vertices:
+                        v.co.x = (v.co.x - cx) * scale
+                        v.co.y = (v.co.y - min_y) * scale  # bottom at y=0
+                        v.co.z = (v.co.z - cz) * scale
+
+                    logger.debug(f"  {piece_name}: {imported_height:.4f}m -> "
+                                 f"{reference_heights[piece_char]:.4f}m (scale {scale:.3f}x)")
+
+                # Rename mesh for clarity
+                mesh.name = f"mesh_{set_name}_{piece_name}"
+
+                # Delete the temporary object (keep the mesh data)
+                bpy.data.objects.remove(tmp_obj, do_unlink=True)
+
+                set_meshes[piece_char] = mesh
+
+            if len(set_meshes) == 6:
+                sets[set_name] = set_meshes
+                logger.info(f"Loaded '{set_name}' piece set ({len(set_meshes)} pieces)")
+            else:
+                missing = [p for p in "PNBRQK" if p not in set_meshes]
+                logger.warning(f"Incomplete set '{set_name}': missing {missing}, skipping")
+
+        logger.info(f"Total piece mesh sets: {len(sets)} ({', '.join(sets.keys())})")
+        return sets
+
+    def _select_piece_set(self, set_name: str):
+        """Swap all piece objects to use meshes from the given set.
+
+        Uses object-level material linking so white and black pieces can
+        share the same mesh data with different materials.
+        """
+        if set_name not in self.piece_mesh_sets:
+            return
+
+        white_mat = bpy.data.materials.get('WhitePieces')
+        black_mat = bpy.data.materials.get('BlackPieces')
+
+        meshes = self.piece_mesh_sets[set_name]
+        for piece_char, mesh in meshes.items():
+            # Ensure mesh has at least one material slot
+            if not mesh.materials:
+                mesh.materials.append(None)
+
+            # Apply to white pieces (uppercase)
+            for obj in self.available_pieces.get(piece_char, []):
+                obj.data = mesh
+                if white_mat:
+                    if not obj.material_slots:
+                        obj.data.materials.append(None)
+                    obj.material_slots[0].link = 'OBJECT'
+                    obj.material_slots[0].material = white_mat
+
+            # Apply to black pieces (lowercase)
+            for obj in self.available_pieces.get(piece_char.lower(), []):
+                obj.data = mesh
+                if black_mat:
+                    if not obj.material_slots:
+                        obj.data.materials.append(None)
+                    obj.material_slots[0].link = 'OBJECT'
+                    obj.material_slots[0].material = black_mat
+
     def disconnect_socket(self, node_tree, target_node, socket_name) -> int:
         """Disconnect all links to a specific socket.
 
@@ -1039,6 +1070,91 @@ class VALUEHybridGenerator:
         bsdf.inputs['Metallic'].default_value = scheme['metallic']
         bsdf.inputs['Specular IOR Level'].default_value = scheme['specular']
 
+    def _apply_wood_texture(self, material, texture_name):
+        """Apply an image-based wood texture to a piece material's Base Color.
+
+        Creates/reuses 'Wood Texture' and 'Wood Mapping' nodes.
+        Uses Box projection with Object coordinates for proper 3D mapping
+        without UV maps.
+        """
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        bsdf = nodes.get('Principled BSDF')
+        if not bsdf:
+            return False
+
+        tex_dir = Path(__file__).parent.parent.parent / "data" / "textures" / "pieces" / texture_name
+        diff_path = None
+        for name in ('diff.jpg', 'diff.png'):
+            p = tex_dir / name
+            if p.exists():
+                diff_path = p
+                break
+        if not diff_path:
+            logger.warning(f"Wood texture not found: {texture_name}")
+            return False
+
+        # Get or create Texture Coordinate node
+        tex_coord = nodes.get('Texture Coordinate')
+        if not tex_coord:
+            tex_coord = nodes.new('ShaderNodeTexCoord')
+            tex_coord.name = 'Texture Coordinate'
+
+        # Dedicated Mapping node for wood texture (don't disturb noise texture mapping)
+        wood_mapping = nodes.get('Wood Mapping')
+        if not wood_mapping:
+            wood_mapping = nodes.new('ShaderNodeMapping')
+            wood_mapping.name = 'Wood Mapping'
+        wood_mapping.inputs['Scale'].default_value = (15.0, 15.0, 15.0)
+        # Randomize offset so each render gets different grain
+        wood_mapping.inputs['Location'].default_value = (
+            np.random.uniform(0, 10),
+            np.random.uniform(0, 10),
+            np.random.uniform(0, 10),
+        )
+
+        # Image Texture node with Box projection (avoids stretching without UVs)
+        img_tex = nodes.get('Wood Texture')
+        if not img_tex:
+            img_tex = nodes.new('ShaderNodeTexImage')
+            img_tex.name = 'Wood Texture'
+        img_tex.projection = 'BOX'
+        img_tex.projection_blend = 0.2
+        img_tex.image = bpy.data.images.load(str(diff_path), check_existing=True)
+
+        # Connect: TexCoord.Object -> Wood Mapping -> Wood Texture -> BSDF.Base Color
+        links.new(tex_coord.outputs['Object'], wood_mapping.inputs['Vector'])
+        links.new(wood_mapping.outputs['Vector'], img_tex.inputs['Vector'])
+        self.disconnect_socket(material.node_tree, bsdf, 'Base Color')
+        links.new(img_tex.outputs['Color'], bsdf.inputs['Base Color'])
+
+        logger.debug(f"  Applied wood texture: {texture_name}")
+        return True
+
+    def _reset_piece_material(self, material, color, is_white_mat):
+        """Reset piece material to solid color (for plastic schemes).
+
+        Disconnects any wood texture from Base Color and restores the original
+        connection (ColorRamp for white, direct value for black).
+        """
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        bsdf = nodes.get('Principled BSDF')
+        if not bsdf:
+            return
+
+        self.disconnect_socket(material.node_tree, bsdf, 'Base Color')
+
+        if is_white_mat:
+            # Reconnect existing ColorRamp -> Base Color
+            colorramp = nodes.get('ColorRamp')
+            if colorramp:
+                for elem in colorramp.color_ramp.elements:
+                    elem.color = color
+                links.new(colorramp.outputs['Color'], bsdf.inputs['Base Color'])
+        else:
+            bsdf.inputs['Base Color'].default_value = color
+
     def randomize_materials(self):
         """Randomize piece, board, and table materials."""
         # Randomize piece materials with realistic properties
@@ -1052,28 +1168,33 @@ class VALUEHybridGenerator:
         roughness_min, roughness_max = piece_scheme['roughness']
         piece_roughness = np.random.uniform(roughness_min, roughness_max)
 
+        is_wood = piece_scheme['type'] == 'wood'
+
         if white_pieces_mat and white_pieces_mat.node_tree:
             bsdf = white_pieces_mat.node_tree.nodes.get('Principled BSDF')
-            colorramp = white_pieces_mat.node_tree.nodes.get('ColorRamp')
 
             # Disconnect Mix node from Specular Tint (causes color artifacts)
             count = self.disconnect_socket(white_pieces_mat.node_tree, bsdf, 'Specular Tint')
             if count > 0:
                 logger.debug(f"Disconnected {count} link(s) from Specular Tint")
 
-            # Update ColorRamp (connected to Base Color)
-            if colorramp:
-                white_color = piece_scheme['white']
-                for elem in colorramp.color_ramp.elements:
-                    elem.color = white_color
+            if is_wood and piece_scheme.get('white_texture'):
+                self._apply_wood_texture(white_pieces_mat, piece_scheme['white_texture'])
+            else:
+                self._reset_piece_material(white_pieces_mat, piece_scheme['white'], is_white_mat=True)
 
             if bsdf:
                 self.apply_material_properties(bsdf, piece_scheme, piece_roughness)
 
-        if black_pieces_mat:
+        if black_pieces_mat and black_pieces_mat.node_tree:
             bsdf = black_pieces_mat.node_tree.nodes.get('Principled BSDF')
+
+            if is_wood and piece_scheme.get('black_texture'):
+                self._apply_wood_texture(black_pieces_mat, piece_scheme['black_texture'])
+            else:
+                self._reset_piece_material(black_pieces_mat, piece_scheme['black'], is_white_mat=False)
+
             if bsdf:
-                bsdf.inputs['Base Color'].default_value = piece_scheme['black']
                 self.apply_material_properties(bsdf, piece_scheme, piece_roughness)
 
         # Randomize board material (wood, stone, plastic, painted, modern)
@@ -1795,9 +1916,8 @@ class VALUEHybridGenerator:
         # Randomize environment strength (brightness)
         background_node = world.node_tree.nodes.get('Background')
         if background_node:
-            # Vary strength between 0.8 and 1.2 (80% to 120% of default)
-            # Narrower range to avoid under/overexposure
-            strength = np.random.uniform(0.8, 1.2)
+            # Vary strength between 0.9 and 1.05 to avoid harsh over/underexposure
+            strength = np.random.uniform(0.9, 1.05)
             background_node.inputs['Strength'].default_value = strength
             logger.debug(f"Environment strength: {strength:.2f}")
 
@@ -1834,6 +1954,14 @@ class VALUEHybridGenerator:
             >>> print(metadata['image'])
             /path/to/output/chess_0000042.jpg
         """
+        # Select random piece mesh set
+        if self.piece_mesh_sets:
+            piece_set = np.random.choice(list(self.piece_mesh_sets.keys()))
+            self._select_piece_set(piece_set)
+            logger.debug(f"Selected piece set: {piece_set}")
+        else:
+            piece_set = "value"
+
         # Randomize materials (pieces, board, table colors)
         self.randomize_materials()
 
@@ -1874,6 +2002,7 @@ class VALUEHybridGenerator:
             "id": f"value_hybrid_{image_index:07d}",
             "image": str(output_path.absolute()),
             "fen": fen,
+            "piece_set": piece_set,
             "bounding_boxes": bounding_boxes,
             "board_corners": board_corners,
         }
@@ -1953,6 +2082,7 @@ class VALUEHybridGenerator:
                 ],
                 "bounding_boxes": metadata.get("bounding_boxes", []),
                 "board_corners": metadata.get("board_corners"),
+                "piece_set": metadata.get("piece_set"),
             }
 
             annotations.append(llava_annotation)

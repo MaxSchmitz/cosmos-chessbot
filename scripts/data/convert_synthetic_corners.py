@@ -56,9 +56,21 @@ def main():
     with open(annotations_path) as f:
         annotations = json.load(f)
 
-    # Filter to entries that have board_corners
-    valid = [a for a in annotations if "board_corners" in a and a["board_corners"]]
-    print(f"Total annotations: {len(annotations)}, with board corners: {len(valid)}")
+    # Filter to entries that have board_corners with all 4 corners in frame
+    def corners_in_frame(entry):
+        bc = entry.get("board_corners")
+        if not bc:
+            return False
+        for x, y in bc["corners"].values():
+            if x < 0 or x > 1 or y < 0 or y > 1:
+                return False
+        return True
+
+    has_corners = [a for a in annotations if a.get("board_corners")]
+    valid = [a for a in has_corners if corners_in_frame(a)]
+    skipped = len(has_corners) - len(valid)
+    print(f"Total annotations: {len(annotations)}, with board corners: {len(has_corners)}, "
+          f"all corners in frame: {len(valid)} (skipped {skipped})")
 
     if not valid:
         print("No annotations with board_corners found. "
