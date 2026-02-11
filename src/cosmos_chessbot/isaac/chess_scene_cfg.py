@@ -48,7 +48,7 @@ CAMERA_OFFSET = (0.0, -0.65, 0.45)
 # --------------------------------------------------------------------------- #
 # Piece physics constants
 # --------------------------------------------------------------------------- #
-PIECE_MASS_KG: float = 0.010        # 10g (typical chess piece)
+PIECE_MASS_KG: float = 0.100        # 100g (matches isaac_so_arm101 DexCube)
 PIECE_FRICTION: float = 0.8
 PIECE_RESTITUTION: float = 0.1      # low bounce
 PIECE_LINEAR_DAMPING: float = 5.0   # prevent sliding
@@ -124,3 +124,11 @@ class ChessSceneCfg(SingleArmTaskSceneCfg):
         self.robot.init_state.pos = ROBOT_POS
         # Remove wrist camera (not needed for RL; saves compute)
         delete_attribute(self, "wrist")
+
+        # -- Solver improvements for collision resolution ----------------------
+        # Keep LeIsaac's default actuator settings (stiffness=17.8, damping=0.6,
+        # effort=10) which allow full range of motion.  Only improve the PhysX
+        # solver to better handle self-collision (prevents gripper penetrating arm):
+        self.robot.spawn.rigid_props.max_depenetration_velocity = 5.0
+        self.robot.spawn.articulation_props.solver_position_iteration_count = 8
+        self.robot.spawn.articulation_props.solver_velocity_iteration_count = 0

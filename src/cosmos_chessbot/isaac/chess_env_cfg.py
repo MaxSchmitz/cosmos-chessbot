@@ -37,17 +37,17 @@ class ChessPickPlaceEnvCfg(SingleArmTaskDirectEnvCfg):
     num_arm_joints: int = 5
     num_gripper_joints: int = 1
 
-    # -- Reward: approach (tanh kernel, two scales) ---------------------------
-    approach_weight: float = 1.0        # coarse: 1 - tanh(dist / std)
-    approach_std: float = 0.1           # 10cm std — guides from far
-    approach_fine_weight: float = 0.5   # fine-grained precision near piece
-    approach_fine_std: float = 0.03     # 3cm std — sharp near piece
+    # -- Reward: approach (single tanh kernel, matching isaac_so_arm101) ------
+    approach_weight: float = 1.0        # 1 - tanh(dist / std)
+    approach_std: float = 0.05          # 5cm std (isaac_so_arm101 default)
 
-    # -- Reward: lift (binary per-step, gated on grasp) ---------------------
-    lift_weight: float = 15.0           # strong per-step signal when lifted
-    lift_threshold: float = 0.03        # 3cm above initial piece Z
+    # -- Reward: lift (height-gated, matching isaac_so_arm101) ----------------
+    # Gates on piece HEIGHT only — no grasp detection.  If the piece is above
+    # the threshold, gravity guarantees something is holding it.
+    lift_weight: float = 15.0           # binary per-step bonus (isaac_so_arm101: 15.0)
+    lift_threshold: float = 0.025       # 2.5cm above initial Z (isaac_so_arm101: 0.025)
 
-    # -- Reward: transport (tanh kernel, gated on lift) ---------------------
+    # -- Reward: transport (tanh kernel, gated on piece lifted) -------------
     transport_weight: float = 16.0      # coarse: guides toward target
     transport_std: float = 0.3          # 30cm std — broad attraction
     transport_fine_weight: float = 5.0  # fine precision at target
@@ -56,21 +56,24 @@ class ChessPickPlaceEnvCfg(SingleArmTaskDirectEnvCfg):
     # -- Reward: success bonus (sparse) ------------------------------------
     success_bonus: float = 100.0        # piece placed within tolerance
 
-    # -- Reward: grasp bonus (one-time) ------------------------------------
-    grasp_bonus: float = 5.0            # one-time when first grasped
-
     # -- Reward: collision penalty (milestone curriculum) -------------------
     # Ramps based on GRASP COUNT, not time.  Stays near zero until the
     # policy learns to grasp, then increases so it learns precision.
-    collision_weight: float = -0.5      # final weight (ramped to)
+    collision_weight: float = -0.3      # final weight (ramped to)
     collision_weight_start: float = -0.001  # initial weight (near zero)
-    collision_milestone_grasps: int = 500  # full penalty after this many grasps
+    collision_milestone_grasps: int = 1000  # full penalty after this many grasps
 
     # -- Reward: action smoothness (milestone curriculum) ------------------
     # Penalizes jerk (sudden direction changes), NOT speed.
-    action_rate_weight: float = -0.005  # final ||a_t - a_{t-1}||² weight
+    action_rate_weight: float = -0.003  # final ||a_t - a_{t-1}||² weight
     action_rate_start: float = -1e-5    # initial (near zero)
-    action_rate_milestone_grasps: int = 500  # full penalty after this many grasps
+    action_rate_milestone_grasps: int = 1000  # full penalty after this many grasps
+
+    # -- Piece count (reduce for training throughput) -------------------------
+    num_pieces: int = 32  # 32 = full board; 1 = single piece for fast training
+
+    # -- Camera (disable to save VRAM for large env counts) ------------------
+    enable_camera: bool = True
 
     # -- Piece physics -------------------------------------------------------
     piece_mass_kg: float = 0.010
@@ -80,9 +83,9 @@ class ChessPickPlaceEnvCfg(SingleArmTaskDirectEnvCfg):
     piece_angular_damping: float = 5.0
 
     # -- Grasp parameters ----------------------------------------------------
-    grasp_threshold: float = 0.05       # 5cm max proximity for grasp trigger
-    grasp_quality_sigma: float = 0.03   # exp decay (widened from 0.01)
-    grasp_offset_z: float = -0.01       # piece hangs 1cm below EE when grasped
+    grasp_threshold: float = 0.02       # 2cm jaw-to-piece (LeIsaac default)
+    gripper_closed_threshold: float = 0.26  # joint angle below this = closed (LeIsaac default)
+    piece_grasp_z_offset: float = 0.007 # 7mm above base = ~center of scaled pawn
 
     # -- Collision parameters ------------------------------------------------
     collision_displacement_threshold: float = 0.005  # 5mm noise filter
@@ -101,7 +104,7 @@ class ChessPickPlaceEnvCfg(SingleArmTaskDirectEnvCfg):
     # -- Reason2 critic (episode video evaluation) ----------------------------
     critic_render_interval: int = 5  # capture camera frame every N control steps
 
-    # -- PhysX GPU buffers (64 envs × 32 pieces = 2048 rigid bodies) ----------
+    # -- PhysX GPU buffers ---------------------------------------------------
     sim: SimulationCfg = SimulationCfg(
         physx=PhysxCfg(
             gpu_found_lost_pairs_capacity=2**23,           # 8M (default 2^21)
@@ -114,3 +117,4 @@ class ChessPickPlaceEnvCfg(SingleArmTaskDirectEnvCfg):
         super().__post_init__()
         self.episode_length_s = 5.0
         self.decimation = 2  # control at 30 Hz (sim at 60 Hz)
+        self.sim.render_interval = self.decimation

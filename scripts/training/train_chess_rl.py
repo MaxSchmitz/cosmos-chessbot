@@ -16,12 +16,13 @@ Usage (inside Isaac Sim container):
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
 # Add project to path
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 # Parse args and launch Isaac Sim via AppLauncher
@@ -29,8 +30,10 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Train chess pick-and-place RL agent")
 parser.add_argument("--num-steps", type=int, default=10000, help="Total env steps")
-parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel envs")
-parser.add_argument("--rollout-length", type=int, default=150,
+parser.add_argument("--num-envs", type=int, default=1024, help="Number of parallel envs")
+parser.add_argument("--num-pieces", type=int, default=1,
+                    help="Pieces per env (1 for fast training, 32 for full board)")
+parser.add_argument("--rollout-length", type=int, default=48,
                     help="Steps per rollout before PPO update")
 parser.add_argument("--ppo-epochs", type=int, default=4,
                     help="PPO optimization epochs per rollout")
@@ -77,7 +80,7 @@ parser.add_argument("--critic-render-interval", type=int, default=5,
                     help="Capture camera frame every N control steps")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
-args.enable_cameras = True  # required for TiledCamera sensors
+args.enable_cameras = args.reason2_critic  # cameras only needed for Reason2 critic
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -85,99 +88,11 @@ simulation_app = app_launcher.app
 # Now import env/torch modules (after SimulationApp init)
 import torch
 import torch.nn as nn
-from torch.distributions import Normal
 
 from cosmos_chessbot.isaac.chess_env import ChessPickPlaceEnv
 from cosmos_chessbot.isaac.chess_env_cfg import ChessPickPlaceEnvCfg
+from cosmos_chessbot.isaac.policy_model import ActorCritic, RunningMeanStd
 from cosmos_chessbot.isaac.reason2_critic import Reason2Critic
-
-
-class ActorCritic(nn.Module):
-    """Actor-Critic with shared trunk and separate heads.
-
-    A small shared feature layer extracts common representations (distances,
-    joint config), then separate actor/critic branches process them
-    independently. The critic gradient is scaled down (0.5x) through the
-    shared trunk so it doesn't distort the actor's features.
-    """
-
-    def __init__(self, obs_dim: int, act_dim: int, hidden: int = 256):
-        super().__init__()
-        # Shared trunk: one layer for common feature extraction
-        self.shared = nn.Sequential(
-            nn.Linear(obs_dim, hidden),
-            nn.ELU(),
-        )
-        # Actor branch
-        self.actor_branch = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.ELU(),
-        )
-        self.actor_mean = nn.Linear(hidden, act_dim)
-        self.actor_log_std = nn.Parameter(torch.zeros(act_dim))
-
-        # Critic branch
-        self.critic_branch = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.ELU(),
-        )
-        self.critic_head = nn.Linear(hidden, 1)
-
-    def forward(self, obs: torch.Tensor):
-        shared_features = self.shared(obs)
-        # Actor path: full gradient
-        actor_features = self.actor_branch(shared_features)
-        action_mean = self.actor_mean(actor_features)
-        action_std = self.actor_log_std.exp().expand_as(action_mean)
-        # Critic path: scale gradient through shared trunk by 0.5x
-        critic_input = shared_features + 0.5 * (shared_features.detach() - shared_features)
-        critic_features = self.critic_branch(critic_input)
-        value = self.critic_head(critic_features).squeeze(-1)
-        return action_mean, action_std, value
-
-    def get_action_and_value(self, obs: torch.Tensor):
-        """Sample action from policy and return action, log_prob, value."""
-        action_mean, action_std, value = self(obs)
-        dist = Normal(action_mean, action_std)
-        action = dist.sample()
-        action = action.clamp(-1.0, 1.0)
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        return action, log_prob, value
-
-    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
-        """Evaluate given actions: return log_prob, entropy, value."""
-        action_mean, action_std, value = self(obs)
-        dist = Normal(action_mean, action_std)
-        log_prob = dist.log_prob(actions).sum(dim=-1)
-        entropy = dist.entropy().sum(dim=-1)
-        return log_prob, entropy, value
-
-
-class RunningMeanStd:
-    """Tracks running mean and std for observation normalization."""
-
-    def __init__(self, shape, device, epsilon=1e-4):
-        self.mean = torch.zeros(shape, device=device)
-        self.var = torch.ones(shape, device=device)
-        self.count = epsilon
-
-    def update(self, batch: torch.Tensor):
-        """Update running stats with a batch of observations (N, shape) or (T*N, shape)."""
-        batch_mean = batch.mean(dim=0)
-        batch_var = batch.var(dim=0, unbiased=False)
-        batch_count = batch.shape[0]
-
-        delta = batch_mean - self.mean
-        total_count = self.count + batch_count
-        self.mean = self.mean + delta * batch_count / total_count
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
-        m2 = m_a + m_b + delta.pow(2) * self.count * batch_count / total_count
-        self.var = m2 / total_count
-        self.count = total_count
-
-    def normalize(self, obs: torch.Tensor) -> torch.Tensor:
-        return (obs - self.mean) / (self.var.sqrt() + 1e-8)
 
 
 def compute_gae(rewards, values, dones, next_value, gamma, gae_lambda):
@@ -219,13 +134,23 @@ def main():
     print("=" * 60)
 
     # -- Setup ---------------------------------------------------------------
+    # Clean stale HDF5 recorder file (LeIsaac writes episode data here;
+    # it grows unbounded and can fill the disk on long runs).
+    hdf5_path = "/tmp/isaaclab/logs/dataset.hdf5"
+    if os.path.exists(hdf5_path):
+        os.remove(hdf5_path)
+        print(f"Cleaned stale {hdf5_path}")
+
     cfg = ChessPickPlaceEnvCfg()
     cfg.scene.num_envs = args.num_envs
+    cfg.num_pieces = args.num_pieces
+    cfg.enable_camera = args.reason2_critic  # disable camera to save VRAM
     N = args.num_envs
     T = args.rollout_length
 
     print(f"\nConfig:")
     print(f"  num_envs:        {N}")
+    print(f"  num_pieces:      {cfg.num_pieces}")
     print(f"  action_space:    {cfg.action_space}")
     print(f"  rl_obs_dim:      {cfg.num_rl_observations}")
     print(f"  episode_length:  {cfg.episode_length_s}s")
