@@ -396,9 +396,102 @@ class YOLODINOFenDetector:
         if verbose:
             print(f"\nTotal pieces placed: {piece_count}")
 
+        # Post-processing: enforce exactly one king per side.
+        # YOLO frequently confuses kings with rooks/knights due to similar
+        # tall silhouettes.  When a king is missing we find the tallest
+        # non-pawn piece of that colour and reclassify it.
+        board = self._enforce_kings(board, detections, homography, verbose)
+
         # Return FEN (board position only)
         fen = board.board_fen()
         return fen
+
+    def _enforce_kings(
+        self,
+        board: chess.Board,
+        detections,
+        homography: np.ndarray,
+        verbose: bool = False,
+    ) -> chess.Board:
+        """Ensure exactly one white king and one black king exist on the board.
+
+        If a king is missing for a colour, the tallest non-pawn piece of that
+        colour is reclassified as the king.  This compensates for YOLO
+        frequently confusing kings (tallest piece) with rooks or knights.
+
+        Args:
+            board: Board with pieces placed from YOLO detections.
+            detections: Raw YOLO detection boxes (results[0].boxes).
+            homography: 3x3 homography matrix.
+            verbose: Print debug info.
+
+        Returns:
+            Board (mutated in-place) with exactly one king per side.
+        """
+        has_white_king = any(
+            board.piece_at(sq) == chess.Piece(chess.KING, chess.WHITE)
+            for sq in chess.SQUARES
+        )
+        has_black_king = any(
+            board.piece_at(sq) == chess.Piece(chess.KING, chess.BLACK)
+            for sq in chess.SQUARES
+        )
+
+        if has_white_king and has_black_king:
+            return board
+
+        # Build a mapping: square -> (bbox_height, yolo_class) for reclassification
+        square_to_height: dict[chess.Square, float] = {}
+        for box in detections:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            bbox_height = float(y2 - y1)
+            x_center = (x1 + x2) / 2
+            y_point = y1 + 0.9 * bbox_height
+
+            sq = self._pixel_to_square(x_center, y_point, homography)
+            if sq is not None and sq not in square_to_height:
+                square_to_height[sq] = bbox_height
+
+        for color, king_piece, is_white, missing_label in [
+            (chess.WHITE, chess.Piece(chess.KING, chess.WHITE), True, "White"),
+            (chess.BLACK, chess.Piece(chess.KING, chess.BLACK), False, "Black"),
+        ]:
+            has_king = has_white_king if is_white else has_black_king
+            if has_king:
+                continue
+
+            # Find the tallest non-pawn piece of this colour
+            best_sq = None
+            best_h = -1.0
+            for sq in chess.SQUARES:
+                piece = board.piece_at(sq)
+                if piece is None or piece.color != color:
+                    continue
+                if piece.piece_type == chess.PAWN:
+                    continue
+                h = square_to_height.get(sq, 0.0)
+                if h > best_h:
+                    best_h = h
+                    best_sq = sq
+
+            if best_sq is not None:
+                old_piece = board.piece_at(best_sq)
+                board.set_piece_at(best_sq, king_piece)
+                if verbose:
+                    print(
+                        f"King enforcement: {missing_label} king missing — "
+                        f"reclassified {old_piece.symbol()} on "
+                        f"{chess.square_name(best_sq)} (bbox_h={best_h:.0f}px) as "
+                        f"{king_piece.symbol()}"
+                    )
+            else:
+                if verbose:
+                    print(
+                        f"King enforcement: {missing_label} king missing and "
+                        f"no candidate piece found"
+                    )
+
+        return board
 
     def detect_fen_with_metadata(
         self,

@@ -26,7 +26,7 @@ from cosmos_chessbot.vision.yolo_dino_detector import YOLODINOFenDetector, CLASS
 # ---------------------------------------------------------------------------
 # Paths (ultralytics nested project/name, so the path is doubled)
 # ---------------------------------------------------------------------------
-PIECE_WEIGHTS = 'runs/detect/runs/detect/yolo26_chess/weights/best.pt'
+PIECE_WEIGHTS = 'runs/detect/runs/detect/yolo26_chess_combined/weights/best.pt'
 CORNER_WEIGHTS = 'runs/pose/runs/pose/board_corners/weights/best.pt'
 
 

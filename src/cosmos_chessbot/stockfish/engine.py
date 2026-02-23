@@ -49,8 +49,12 @@ class StockfishEngine:
     def stop(self) -> None:
         """Stop the Stockfish engine process."""
         if self._process is not None:
-            self._send("quit")
-            self._process.wait(timeout=2)
+            try:
+                self._send("quit")
+                self._process.wait(timeout=2)
+            except (BrokenPipeError, OSError):
+                self._process.kill()
+                self._process.wait(timeout=2)
             self._process = None
 
     def new_game(self) -> None:
@@ -77,6 +81,14 @@ class StockfishEngine:
         Returns:
             Best move in UCI format (e.g., 'e2e4')
         """
+        # Validate FEN before sending to engine
+        if fen:
+            board_part = fen.split()[0]
+            if 'K' not in board_part or 'k' not in board_part:
+                raise ValueError(
+                    f"Invalid FEN (missing king): {fen}"
+                )
+
         # Set position
         if fen:
             pos_cmd = f"position fen {fen}"

@@ -56,8 +56,8 @@ def main():
         "--policy",
         type=str,
         default="cosmos",
-        choices=["pi05", "cosmos"],
-        help="Policy to use: pi05 or cosmos (default: cosmos)",
+        choices=["pi05", "cosmos", "ppo"],
+        help="Policy to use: pi05, cosmos, or ppo (default: cosmos)",
     )
     parser.add_argument(
         "--policy-checkpoint",
@@ -91,6 +91,46 @@ def main():
         choices=["single-move", "full-game"],
         help="single-move: execute moves one at a time; full-game: full game loop with turn detection",
     )
+    # Perception
+    parser.add_argument(
+        "--perception",
+        type=str,
+        default="yolo",
+        choices=["yolo", "cosmos"],
+        help="Perception backend: yolo (YOLO26-DINO-MLP) or cosmos (default: yolo)",
+    )
+    parser.add_argument(
+        "--yolo-piece-weights",
+        type=str,
+        default=None,
+        help="Path to YOLO26 piece detection weights",
+    )
+    parser.add_argument(
+        "--yolo-corner-weights",
+        type=str,
+        default=None,
+        help="Path to YOLO26 corner pose detection weights",
+    )
+    parser.add_argument(
+        "--static-corners",
+        type=str,
+        default=None,
+        help="Path to static calibrated corners JSON (skips corner detection)",
+    )
+
+    # Robot
+    parser.add_argument(
+        "--robot-port",
+        type=str,
+        default="/dev/tty.usbmodem58FA0962531",
+        help="SO-101 USB port",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip robot connection (vision + planning only)",
+    )
+
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -119,16 +159,30 @@ def main():
         policy_checkpoint=args.policy_checkpoint,
         enable_planning=args.enable_planning,
         color=args.color,
+        # Perception
+        perception_backend=args.perception,
+        yolo_piece_weights=args.yolo_piece_weights,
+        yolo_corner_weights=args.yolo_corner_weights,
+        static_corners=args.static_corners,
+        # Robot
+        robot_port=args.robot_port,
+        overhead_camera_index=args.overhead_camera,
+        wrist_camera_index=args.wrist_camera,
+        dry_run=args.dry_run,
     )
 
     print("Initializing Cosmos Chessbot...")
     print(f"  Overhead camera: {args.overhead_camera}")
     print(f"  Wrist camera: {args.wrist_camera}")
     print(f"  Stockfish: {args.stockfish}")
-    print(f"  Perception model: {args.model}")
+    print(f"  Perception: {args.perception}")
     print(f"  Policy: {args.policy}")
     print(f"  Color: {args.color}")
     print(f"  Game mode: {args.game_mode}")
+    print(f"  Robot port: {args.robot_port}")
+    print(f"  Dry run: {args.dry_run}")
+    if args.cosmos_server:
+        print(f"  Cosmos server: {args.cosmos_server}")
     if args.policy_checkpoint:
         print(f"  Policy checkpoint: {args.policy_checkpoint}")
     if args.policy == "cosmos":
