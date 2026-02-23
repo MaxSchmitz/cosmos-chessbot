@@ -75,6 +75,12 @@ class OrchestratorConfig:
     dry_run: bool = False
     """If True, skip robot connection (policy inference only)."""
 
+    # Board geometry
+    board_square_size: float = 0.05
+    """Physical board square size in metres (default 5cm = 40cm total board)."""
+    board_center_offset_y: float = 0.20
+    """Distance from robot base to board centre, in metres."""
+
     # Perception configuration
     perception_backend: str = "yolo"
     """Perception backend: 'yolo' (YOLO26-DINO-MLP) or 'cosmos' (Cosmos-Reason2)"""
@@ -160,6 +166,9 @@ class ChessOrchestrator:
             'gripper.pos': 1.63,
         }
 
+        # Board calibration (pixel-to-world mapping, bootstrapped on first sense)
+        self.board_calibration = None
+
         # Initialize selected policy
         self._init_policy()
 
@@ -173,10 +182,14 @@ class ChessOrchestrator:
             )
         elif self.config.policy_type == "ppo":
             from ..policy.ppo_policy import PPOPolicy
-            print(f"Initializing PPO policy...")
+            print("Initializing PPO policy...")
             self.policy = PPOPolicy(
                 checkpoint_path=self.config.policy_checkpoint,
             )
+        elif self.config.policy_type == "waypoint":
+            from ..policy.waypoint_policy import WaypointPolicy
+            print("Initializing Waypoint policy (Cosmos IK)...")
+            self.policy = WaypointPolicy()
         elif self.config.policy_type == "cosmos":
             from ..policy.cosmos_policy import CosmosPolicy
             print(f"Initializing Cosmos Policy...")
@@ -250,6 +263,54 @@ class ChessOrchestrator:
             logger.error("Failed to connect to robot: %s", e)
             self.robot = None
 
+    def _init_board_calibration(self, image) -> None:
+        """Bootstrap board calibration from YOLO corner detection.
+
+        Detects the 4 board corners in ``image`` and creates a
+        ``BoardCalibration`` instance that maps pixel coordinates to 3D
+        world coordinates on the board plane.
+
+        YOLO returns corners as [TL, TR, BR, BL] from camera perspective.
+        BoardCalibration expects [a1, h1, h8, a8].
+        Mapping: a1=BL(idx 3), h1=BR(idx 2), h8=TR(idx 1), a8=TL(idx 0).
+        """
+        if self._yolo_detector is None:
+            logger.warning("No YOLO detector -- cannot bootstrap board calibration")
+            return
+
+        import numpy as np
+        if not isinstance(image, np.ndarray):
+            image_np = np.array(image)
+        else:
+            image_np = image
+
+        corners = self._yolo_detector._detect_corners(image_np)
+        if corners is None:
+            logger.warning("Board corner detection failed -- calibration unavailable")
+            return
+
+        # corners shape: (4, 2) as [TL, TR, BR, BL]
+        # BoardCalibration wants [a1, h1, h8, a8]
+        pixel_corners = [
+            tuple(corners[3]),  # a1 = BL
+            tuple(corners[2]),  # h1 = BR
+            tuple(corners[1]),  # h8 = TR
+            tuple(corners[0]),  # a8 = TL
+        ]
+
+        h, w = image_np.shape[:2]
+
+        from ..utils.pixel_to_board import BoardCalibration
+        self.board_calibration = BoardCalibration(
+            pixel_corners=pixel_corners,
+            image_size=(w, h),
+            square_size=self.config.board_square_size,
+        )
+        logger.info(
+            "Board calibration initialised (square_size=%.3fm, image=%dx%d)",
+            self.config.board_square_size, w, h,
+        )
+
     def sense(self) -> tuple:
         """Capture images from cameras.
 
@@ -297,7 +358,7 @@ class ChessOrchestrator:
             fen = f"{fen} {turn} KQkq - 0 1"
         return self.engine.get_best_move(fen=fen)
 
-    def compile_intent(self, move: str, board_state: BoardState, image=None) -> dict:
+    def compile_intent(self, move: str, board_state: BoardState, image=None, wrist_image=None) -> dict:
         """Compile symbolic move into physical manipulation intent.
 
         Uses Cosmos-Reason2 to reason about physical constraints and
@@ -333,6 +394,7 @@ class ChessOrchestrator:
                 move_uci=move,
                 from_square=from_square,
                 to_square=to_square,
+                wrist_image=wrist_image,
             )
             print(f"  Obstacles: {action_reasoning.obstacles}")
             print(f"  Grasp strategy: {action_reasoning.grasp_strategy}")
@@ -349,6 +411,7 @@ class ChessOrchestrator:
                 from_square=from_square,
                 to_square=to_square,
                 piece_type=piece_type,
+                wrist_image=wrist_image,
             )
             print(f"  Waypoints: {len(trajectory_plan.waypoints)}")
             for wp in trajectory_plan.waypoints:
@@ -389,6 +452,23 @@ class ChessOrchestrator:
             f"Pick the piece at {intent['pick_square']} "
             f"and place it at {intent['place_square']}"
         )
+
+        # Waypoint: execute Cosmos trajectory via geometric IK
+        if self.config.policy_type == "waypoint":
+            from ..policy.waypoint_policy import WaypointPolicy
+            assert isinstance(self.policy, WaypointPolicy)
+            waypoints_3d = intent.get("waypoints_3d")
+            trajectory_plan = intent.get("trajectory_plan")
+            if not waypoints_3d or not trajectory_plan:
+                logger.error("Waypoint policy requires waypoints_3d from compile_intent")
+                return False
+            labels = [wp.label for wp in trajectory_plan.waypoints]
+            return self.policy.run_waypoint_trajectory(
+                waypoints_3d=waypoints_3d,
+                labels=labels,
+                get_state_fn=self._get_robot_state,
+                send_action_fn=self._send_joint_targets,
+            )
 
         # PPO: run closed-loop control with live observations
         if self.config.policy_type == "ppo":
@@ -545,7 +625,7 @@ class ChessOrchestrator:
         Returns:
             Tuple of (success, actual_board_state, fen_comparison, goal_verification)
         """
-        overhead, _ = self.sense()
+        overhead, wrist = self.sense()
 
         # Stage 1: Visual goal verification (Cosmos Reason2)
         goal_verification = None
@@ -557,6 +637,7 @@ class ChessOrchestrator:
                 from_square=intent["pick_square"],
                 to_square=intent["place_square"],
                 piece_type=intent.get("piece_type", "piece"),
+                wrist_image=wrist,
             )
             status = "PASS" if goal_verification.success else "FAIL"
             print(f"  Visual check: {status} "
@@ -605,7 +686,7 @@ class ChessOrchestrator:
             print(f"  Recovery attempt {attempt + 1}/{max_attempts}")
 
             # Get current view
-            overhead, _ = self.sense()
+            overhead, wrist = self.sense()
 
             # Use Cosmos to reason about the correction
             if self.game_reasoning:
@@ -614,6 +695,7 @@ class ChessOrchestrator:
                     expected_fen=expected_fen,
                     actual_fen=failure_state.fen,
                     differences=fen_comparison.differences,
+                    wrist_image=wrist,
                 )
                 print(f"  Physical cause: {correction_plan.physical_cause}")
                 print(f"  Correction needed: {correction_plan.correction_needed}")
@@ -660,6 +742,7 @@ class ChessOrchestrator:
         move: str,
         current_fen: str,
         current_image=None,
+        wrist_image=None,
     ) -> bool:
         """Execute a move with full verification and recovery loop.
 
@@ -690,7 +773,7 @@ class ChessOrchestrator:
             anomalies=[],
             raw_response="",
         )
-        intent = self.compile_intent(move, board_state, image=current_image)
+        intent = self.compile_intent(move, board_state, image=current_image, wrist_image=wrist_image)
 
         # 3. Execute move
         print(f"\n🤖 Executing action...")
@@ -726,6 +809,10 @@ class ChessOrchestrator:
         print("=" * 60)
         overhead, wrist = self.sense()
 
+        # Bootstrap board calibration on first call
+        if self.board_calibration is None:
+            self._init_board_calibration(overhead)
+
         # 2. Perceive
         print("\nPERCEIVING")
         board_state = self.perceive(overhead)
@@ -744,6 +831,7 @@ class ChessOrchestrator:
             move=best_move,
             current_fen=board_state.fen,
             current_image=overhead,
+            wrist_image=wrist,
         )
 
         # 5. Track on internal board if successful

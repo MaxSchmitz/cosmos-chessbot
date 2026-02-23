@@ -61,6 +61,7 @@ class ActionReasoningRequest(BaseModel):
     to_square: str
     max_new_tokens: int = 512
     temperature: float = 0.1
+    wrist_image_base64: Optional[str] = None
 
 
 class VideoReasoningRequest(BaseModel):
@@ -79,6 +80,7 @@ class TrajectoryRequest(BaseModel):
     piece_type: str = "piece"
     max_new_tokens: int = 1024
     temperature: float = 0.1
+    wrist_image_base64: Optional[str] = None
 
 
 class GoalVerificationRequest(BaseModel):
@@ -90,6 +92,7 @@ class GoalVerificationRequest(BaseModel):
     piece_type: str = "piece"
     max_new_tokens: int = 512
     temperature: float = 0.1
+    wrist_image_base64: Optional[str] = None
 
 
 class CorrectionRequest(BaseModel):
@@ -100,6 +103,7 @@ class CorrectionRequest(BaseModel):
     differences: list[str]
     max_new_tokens: int = 512
     temperature: float = 0.1
+    wrist_image_base64: Optional[str] = None
 
 
 class EpisodeCritiqueRequest(BaseModel):
@@ -191,6 +195,7 @@ async def reason_action(request: ActionReasoningRequest):
 
     try:
         image = _decode_image(request.image_base64)
+        wrist = _decode_image(request.wrist_image_base64) if request.wrist_image_base64 else None
         result = reasoning.reason_about_action(
             image=image,
             move_uci=request.move_uci,
@@ -198,6 +203,7 @@ async def reason_action(request: ActionReasoningRequest):
             to_square=request.to_square,
             max_new_tokens=request.max_new_tokens,
             temperature=request.temperature,
+            wrist_image=wrist,
         )
         return {
             "obstacles": result.obstacles,
@@ -220,6 +226,7 @@ async def reason_trajectory(request: TrajectoryRequest):
 
     try:
         image = _decode_image(request.image_base64)
+        wrist = _decode_image(request.wrist_image_base64) if request.wrist_image_base64 else None
         result = reasoning.plan_trajectory(
             image=image,
             move_uci=request.move_uci,
@@ -228,6 +235,7 @@ async def reason_trajectory(request: TrajectoryRequest):
             piece_type=request.piece_type,
             max_new_tokens=request.max_new_tokens,
             temperature=request.temperature,
+            wrist_image=wrist,
         )
         return {
             "waypoints": [
@@ -250,6 +258,7 @@ async def reason_verify_goal(request: GoalVerificationRequest):
 
     try:
         image = _decode_image(request.image_base64)
+        wrist = _decode_image(request.wrist_image_base64) if request.wrist_image_base64 else None
         result = reasoning.verify_goal(
             image=image,
             move_uci=request.move_uci,
@@ -258,6 +267,7 @@ async def reason_verify_goal(request: GoalVerificationRequest):
             piece_type=request.piece_type,
             max_new_tokens=request.max_new_tokens,
             temperature=request.temperature,
+            wrist_image=wrist,
         )
         return {
             "success": result.success,
@@ -327,6 +337,7 @@ async def reason_correction(request: CorrectionRequest):
 
     try:
         image = _decode_image(request.image_base64)
+        wrist = _decode_image(request.wrist_image_base64) if request.wrist_image_base64 else None
         result = reasoning.plan_correction(
             image=image,
             expected_fen=request.expected_fen,
@@ -334,6 +345,7 @@ async def reason_correction(request: CorrectionRequest):
             differences=request.differences,
             max_new_tokens=request.max_new_tokens,
             temperature=request.temperature,
+            wrist_image=wrist,
         )
         return {
             "physical_cause": result.physical_cause,

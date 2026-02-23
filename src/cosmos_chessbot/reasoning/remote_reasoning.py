@@ -119,18 +119,22 @@ class RemoteChessGameReasoning:
         to_square: str,
         max_new_tokens: int = 512,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> ActionReasoning:
         """Get action reasoning via remote server."""
+        payload = {
+            "image_base64": _encode_image(image),
+            "move_uci": move_uci,
+            "from_square": from_square,
+            "to_square": to_square,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+        }
+        if wrist_image is not None:
+            payload["wrist_image_base64"] = _encode_image(wrist_image)
         response = self.client.post(
             f"{self.server_url}/reason/action",
-            json={
-                "image_base64": _encode_image(image),
-                "move_uci": move_uci,
-                "from_square": from_square,
-                "to_square": to_square,
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-            },
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()
@@ -153,18 +157,22 @@ class RemoteChessGameReasoning:
         differences: list,
         max_new_tokens: int = 512,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> CorrectionPlan:
         """Get correction plan via remote server."""
+        payload = {
+            "image_base64": _encode_image(image),
+            "expected_fen": expected_fen,
+            "actual_fen": actual_fen,
+            "differences": [str(d) for d in differences],
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+        }
+        if wrist_image is not None:
+            payload["wrist_image_base64"] = _encode_image(wrist_image)
         response = self.client.post(
             f"{self.server_url}/reason/correction",
-            json={
-                "image_base64": _encode_image(image),
-                "expected_fen": expected_fen,
-                "actual_fen": actual_fen,
-                "differences": [str(d) for d in differences],
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-            },
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()
@@ -186,19 +194,23 @@ class RemoteChessGameReasoning:
         piece_type: str = "piece",
         max_new_tokens: int = 1024,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> TrajectoryPlan:
         """Plan trajectory via remote server."""
+        payload = {
+            "image_base64": _encode_image(image),
+            "move_uci": move_uci,
+            "from_square": from_square,
+            "to_square": to_square,
+            "piece_type": piece_type,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+        }
+        if wrist_image is not None:
+            payload["wrist_image_base64"] = _encode_image(wrist_image)
         response = self.client.post(
             f"{self.server_url}/reason/trajectory",
-            json={
-                "image_base64": _encode_image(image),
-                "move_uci": move_uci,
-                "from_square": from_square,
-                "to_square": to_square,
-                "piece_type": piece_type,
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-            },
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()
@@ -227,19 +239,23 @@ class RemoteChessGameReasoning:
         piece_type: str = "piece",
         max_new_tokens: int = 512,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> GoalVerification:
         """Verify goal via remote server."""
+        payload = {
+            "image_base64": _encode_image(image),
+            "move_uci": move_uci,
+            "from_square": from_square,
+            "to_square": to_square,
+            "piece_type": piece_type,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+        }
+        if wrist_image is not None:
+            payload["wrist_image_base64"] = _encode_image(wrist_image)
         response = self.client.post(
             f"{self.server_url}/reason/verify_goal",
-            json={
-                "image_base64": _encode_image(image),
-                "move_uci": move_uci,
-                "from_square": from_square,
-                "to_square": to_square,
-                "piece_type": piece_type,
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-            },
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()

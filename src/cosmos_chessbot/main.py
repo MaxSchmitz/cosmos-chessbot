@@ -56,8 +56,8 @@ def main():
         "--policy",
         type=str,
         default="cosmos",
-        choices=["pi05", "cosmos", "ppo"],
-        help="Policy to use: pi05, cosmos, or ppo (default: cosmos)",
+        choices=["pi05", "cosmos", "ppo", "waypoint"],
+        help="Policy to use: pi05, cosmos, ppo, or waypoint (default: cosmos)",
     )
     parser.add_argument(
         "--policy-checkpoint",
@@ -131,6 +131,21 @@ def main():
         help="Skip robot connection (vision + planning only)",
     )
 
+    # Board geometry
+    parser.add_argument(
+        "--board-square-size",
+        type=float,
+        default=0.05,
+        help="Physical board square size in metres (default: 0.05 = 40cm total board). "
+             "SO-101 reach is ~33cm; tournament boards (0.107) are too large.",
+    )
+    parser.add_argument(
+        "--board-center-y",
+        type=float,
+        default=0.20,
+        help="Distance from robot base to board centre in metres (default: 0.20)",
+    )
+
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -169,6 +184,9 @@ def main():
         overhead_camera_index=args.overhead_camera,
         wrist_camera_index=args.wrist_camera,
         dry_run=args.dry_run,
+        # Board geometry
+        board_square_size=args.board_square_size,
+        board_center_offset_y=args.board_center_y,
     )
 
     print("Initializing Cosmos Chessbot...")
@@ -181,6 +199,7 @@ def main():
     print(f"  Game mode: {args.game_mode}")
     print(f"  Robot port: {args.robot_port}")
     print(f"  Dry run: {args.dry_run}")
+    print(f"  Board square size: {args.board_square_size}m ({args.board_square_size*8*100:.0f}cm total)")
     if args.cosmos_server:
         print(f"  Cosmos server: {args.cosmos_server}")
     if args.policy_checkpoint:

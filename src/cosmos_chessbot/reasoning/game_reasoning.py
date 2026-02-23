@@ -84,7 +84,7 @@ class ChessGameReasoning:
 
     PIXELS_PER_TOKEN = 32**2
 
-    SYSTEM_PROMPT = "You are an embodied chess-playing robot with an egocentric camera view. The camera view is YOUR view of the chess board and your opponent."
+    SYSTEM_PROMPT = "You are an embodied chess-playing robot with camera views of the chess board. You may receive an overhead camera view (looking down at the board from above) and/or a wrist camera view (from your gripper, close to pieces). Use all available views to reason about the physical scene."
 
     TURN_DETECTION_PROMPT = """Watch this video from my egocentric camera and reason about the chess game.
 
@@ -198,6 +198,33 @@ Provide your verification in JSON:
     "reasoning": "your step-by-step reasoning about the physical outcome"
 }}
 """
+
+    @staticmethod
+    def _build_image_content(
+        image: Image.Image,
+        wrist_image: Optional[Image.Image] = None,
+    ) -> list[dict]:
+        """Build image content entries for a Qwen3VL conversation.
+
+        When only an overhead image is provided, returns a single image entry.
+        When both images are provided, labels each so the model can
+        distinguish between them.
+
+        Args:
+            image: Primary overhead / egocentric camera image.
+            wrist_image: Optional wrist camera image.
+
+        Returns:
+            List of content dict entries suitable for a Qwen3VL user message.
+        """
+        if wrist_image is None:
+            return [{"type": "image", "image": image}]
+        return [
+            {"type": "text", "text": "Overhead camera view:"},
+            {"type": "image", "image": image},
+            {"type": "text", "text": "Wrist camera view:"},
+            {"type": "image", "image": wrist_image},
+        ]
 
     def __init__(
         self,
@@ -431,6 +458,7 @@ Provide your verification in JSON:
         differences: list,
         max_new_tokens: int = 512,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> "CorrectionPlan":
         """Plan how to correct a move that didn't execute as expected.
 
@@ -484,7 +512,7 @@ Provide your analysis in JSON:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
+                    *self._build_image_content(image, wrist_image),
                     {"type": "text", "text": prompt},
                 ],
             },
@@ -528,6 +556,7 @@ Provide your analysis in JSON:
         to_square: str,
         max_new_tokens: int = 512,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> "ActionReasoning":
         """Reason about how to physically execute a chess move.
 
@@ -575,7 +604,7 @@ Provide your analysis in JSON:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
+                    *self._build_image_content(image, wrist_image),
                     {"type": "text", "text": prompt},
                 ],
             },
@@ -674,6 +703,7 @@ Provide your analysis in JSON:
         piece_type: str = "piece",
         max_new_tokens: int = 1024,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> "TrajectoryPlan":
         """Plan a 2D pixel-space trajectory for executing a chess move.
 
@@ -707,7 +737,7 @@ Provide your analysis in JSON:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
+                    *self._build_image_content(image, wrist_image),
                     {"type": "text", "text": prompt},
                 ],
             },
@@ -750,6 +780,7 @@ Provide your analysis in JSON:
         piece_type: str = "piece",
         max_new_tokens: int = 512,
         temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
     ) -> "GoalVerification":
         """Verify physical outcome of a chess move from post-action image.
 
@@ -784,7 +815,7 @@ Provide your analysis in JSON:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
+                    *self._build_image_content(image, wrist_image),
                     {"type": "text", "text": prompt},
                 ],
             },
