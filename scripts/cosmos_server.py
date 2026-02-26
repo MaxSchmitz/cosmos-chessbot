@@ -237,6 +237,11 @@ async def reason_trajectory(request: TrajectoryRequest):
             temperature=request.temperature,
             wrist_image=wrist,
         )
+        n_wp = len(result.waypoints)
+        if n_wp == 0:
+            print(f"WARNING: Trajectory returned 0 waypoints. Raw reasoning: {result.reasoning[:500]}")
+        else:
+            print(f"Trajectory: {n_wp} waypoints for {request.move_uci}")
         return {
             "waypoints": [
                 {"point_2d": list(wp.point_2d), "label": wp.label}

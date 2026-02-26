@@ -64,8 +64,8 @@ class DINOChessPieceClassifier(nn.Module):
     def __init__(self, num_classes=12):
         super().__init__()
 
-        # Pretrained DINO ViT-S/16
-        self.dino = ViTModel.from_pretrained('facebook/dino-vits16')
+        # Pretrained DINO ViT-S/8
+        self.dino = ViTModel.from_pretrained('facebook/dino-vits8')
         self.dino_feature_dim = self.dino.config.hidden_size  # 384
 
         # Freeze DINO
@@ -158,7 +158,7 @@ class YOLODINOFenDetector:
             self.mlp.eval()
 
             # DINO preprocessor
-            self.dino_processor = ViTImageProcessor.from_pretrained('facebook/dino-vits16')
+            self.dino_processor = ViTImageProcessor.from_pretrained('facebook/dino-vits8')
         else:
             self.mlp = None
             self.dino_processor = None

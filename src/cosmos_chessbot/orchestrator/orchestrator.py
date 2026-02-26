@@ -80,6 +80,8 @@ class OrchestratorConfig:
     """Physical board square size in metres (default 5cm = 40cm total board)."""
     board_center_offset_y: float = 0.20
     """Distance from robot base to board centre, in metres."""
+    board_table_z: float = 0.0
+    """Board surface height relative to robot base (0 = same level)."""
 
     # Perception configuration
     perception_backend: str = "yolo"
@@ -121,8 +123,8 @@ class ChessOrchestrator:
         if config.perception_backend == "yolo":
             logger.info("Using YOLO26-DINO-MLP perception backend")
             self._yolo_detector = YOLODINOFenDetector(
-                yolo_weights=config.yolo_piece_weights or "runs/detect/runs/detect/yolo26_chess_combined/weights/best.pt",
-                corner_weights=config.yolo_corner_weights or "runs/pose/runs/pose/board_corners/weights/best.pt",
+                yolo_weights=config.yolo_piece_weights or "runs/detect/yolo26_chess_combined/weights/best.pt",
+                corner_weights=config.yolo_corner_weights or "runs/pose/board_corners/weights/best.pt",
                 mlp_weights=config.yolo_mlp_weights,
                 static_corners=config.static_corners,
             )
@@ -159,6 +161,15 @@ class ChessOrchestrator:
         ]
         self._home_position = {
             'shoulder_pan.pos': 7.55,
+            'shoulder_lift.pos': -98.12,
+            'elbow_flex.pos': 100.00,
+            'wrist_flex.pos': 62.88,
+            'wrist_roll.pos': 0.08,
+            'gripper.pos': 1.63,
+        }
+        # Park position: arm rotated to the right so it doesn't block overhead camera
+        self._park_position = {
+            'shoulder_pan.pos': 90.0,
             'shoulder_lift.pos': -98.12,
             'elbow_flex.pos': 100.00,
             'wrist_flex.pos': 62.88,
@@ -305,6 +316,8 @@ class ChessOrchestrator:
             pixel_corners=pixel_corners,
             image_size=(w, h),
             square_size=self.config.board_square_size,
+            table_z=self.config.board_table_z,
+            center_y=self.config.board_center_offset_y,
         )
         logger.info(
             "Board calibration initialised (square_size=%.3fm, image=%dx%d)",
@@ -400,19 +413,24 @@ class ChessOrchestrator:
             print(f"  Grasp strategy: {action_reasoning.grasp_strategy}")
             print(f"  Risks: {action_reasoning.risks}")
 
-        # Plan trajectory using Action CoT
+        # Plan trajectory using Action CoT (retry up to 3 times on 0 waypoints)
         trajectory_plan = None
         waypoints_3d = None
         if self.game_reasoning and image:
-            print(f"Planning trajectory (Action CoT): {move}")
-            trajectory_plan = self.game_reasoning.plan_trajectory(
-                image=image,
-                move_uci=move,
-                from_square=from_square,
-                to_square=to_square,
-                piece_type=piece_type,
-                wrist_image=wrist_image,
-            )
+            for attempt in range(3):
+                print(f"Planning trajectory (Action CoT): {move}"
+                      + (f" (retry {attempt})" if attempt > 0 else ""))
+                trajectory_plan = self.game_reasoning.plan_trajectory(
+                    image=image,
+                    move_uci=move,
+                    from_square=from_square,
+                    to_square=to_square,
+                    piece_type=piece_type,
+                    wrist_image=wrist_image,
+                )
+                if trajectory_plan.waypoints:
+                    break
+                print("  WARNING: 0 waypoints returned, retrying...")
             print(f"  Waypoints: {len(trajectory_plan.waypoints)}")
             for wp in trajectory_plan.waypoints:
                 print(f"    {wp.label}: ({wp.point_2d[0]}, {wp.point_2d[1]})")
@@ -609,6 +627,27 @@ class ChessOrchestrator:
         self.robot.send_action(home_dict)
         logger.info("Home position sent")
 
+    def park_robot(self):
+        """Park the arm out of the overhead camera's field of view.
+
+        Rotates shoulder_pan to -90 degrees (pointing left) so the arm
+        does not occlude the board during sensing/perception.
+        """
+        import time
+        import torch
+
+        if self.robot is None:
+            logger.warning("No robot connected -- cannot park")
+            return
+
+        park_dict = {
+            name: torch.tensor([val], dtype=torch.float32)
+            for name, val in self._park_position.items()
+        }
+        self.robot.send_action(park_dict)
+        time.sleep(2.0)  # wait for arm to reach park position
+        logger.info("Robot parked (arm out of camera view)")
+
     def verify(self, expected_fen: str, intent: dict = None, vision_backend="yolo") -> tuple:
         """Verify board state after action using visual check + FEN comparison.
 
@@ -625,6 +664,7 @@ class ChessOrchestrator:
         Returns:
             Tuple of (success, actual_board_state, fen_comparison, goal_verification)
         """
+        self.park_robot()
         overhead, wrist = self.sense()
 
         # Stage 1: Visual goal verification (Cosmos Reason2)
@@ -803,6 +843,9 @@ class ChessOrchestrator:
         Returns:
             True if move succeeded
         """
+        # 0. Park arm out of camera view before sensing
+        self.park_robot()
+
         # 1. Sense
         print("\n" + "=" * 60)
         print("SENSING")

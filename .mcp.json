@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "chessbot": {
+      "command": "uv",
+      "args": ["run", "python", "scripts/run_mcp_server.py"],
+      "env": {
+        "CHESS_OVERHEAD_CAM": "1",
+        "CHESS_WRIST_CAM": "0",
+        "CHESS_COSMOS_URL": "http://localhost:8000",
+        "CHESS_DRY_RUN": "false"
+      }
+    }
+  }
+}

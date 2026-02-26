@@ -40,6 +40,17 @@ class Camera:
         if self._cap is not None:
             self._cap.release()
 
+    def reconnect(self) -> None:
+        """Release and re-open the camera to recover from USB failures."""
+        import cv2
+
+        if self._cap is not None:
+            self._cap.release()
+        self._cap = cv2.VideoCapture(self.config.device_id)
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
+        self._cap.set(cv2.CAP_PROP_FPS, self.config.fps)
+
     def capture(self) -> Image.Image:
         """Capture a single frame and return as PIL Image.
 

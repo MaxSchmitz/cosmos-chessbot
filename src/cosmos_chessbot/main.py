@@ -145,6 +145,12 @@ def main():
         default=0.20,
         help="Distance from robot base to board centre in metres (default: 0.20)",
     )
+    parser.add_argument(
+        "--board-table-z",
+        type=float,
+        default=0.0,
+        help="Board surface height relative to robot base in metres (default: 0.0)",
+    )
 
     parser.add_argument(
         "--verbose", "-v",
@@ -187,6 +193,7 @@ def main():
         # Board geometry
         board_square_size=args.board_square_size,
         board_center_offset_y=args.board_center_y,
+        board_table_z=args.board_table_z,
     )
 
     print("Initializing Cosmos Chessbot...")

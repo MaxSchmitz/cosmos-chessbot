@@ -18,9 +18,9 @@ import cv2
 import numpy as np
 
 
-# Board geometry constants (matching Isaac Sim scene and real board)
-BOARD_SQUARE_SIZE: float = 0.106768  # meters per square
-TABLE_HEIGHT: float = 0.75  # meters
+# Board geometry constants
+BOARD_SQUARE_SIZE: float = 0.05  # meters per square (default for real robot)
+TABLE_HEIGHT: float = 0.0  # board surface height relative to robot base
 BOARD_CENTER_OFFSET_Y: float = 0.20  # meters forward of robot
 
 
@@ -50,6 +50,30 @@ def _board_corner_world_coords(
     )
 
 
+def square_to_world(
+    square: str,
+    square_size: float = BOARD_SQUARE_SIZE,
+    center_y: float = BOARD_CENTER_OFFSET_Y,
+    table_z: float = TABLE_HEIGHT,
+) -> tuple[float, float, float]:
+    """Convert a chess square name to world coordinates.
+
+    Args:
+        square: Algebraic notation (e.g. 'e2', 'd1').
+        square_size: Board square size in meters.
+        center_y: Board center Y offset from robot.
+        table_z: Board surface height.
+
+    Returns:
+        (x, y, z) world coordinates of the square center.
+    """
+    file_idx = ord(square[0].lower()) - ord('a')  # 0-7 for a-h
+    rank_idx = int(square[1]) - 1                   # 0-7 for 1-8
+    x = (file_idx - 3.5) * square_size
+    y = (rank_idx + 0.5) * square_size
+    return (x, y, table_z)
+
+
 @dataclass
 class BoardCalibration:
     """Homography-based pixel-to-board-plane mapping.
@@ -68,20 +92,22 @@ class BoardCalibration:
     pixel_corners: list[tuple[int, int]]
     image_size: tuple[int, int] = (1920, 1080)
     square_size: float = BOARD_SQUARE_SIZE
+    table_z: float = TABLE_HEIGHT
+    center_y: float = BOARD_CENTER_OFFSET_Y
 
     # Computed in __post_init__
     _H: np.ndarray = field(init=False, repr=False)
-    _table_z: float = field(init=False, repr=False)
 
     def __post_init__(self):
         if len(self.pixel_corners) != 4:
             raise ValueError("Exactly 4 board corner pixel coordinates required")
 
         src_pts = np.array(self.pixel_corners, dtype=np.float64)
-        dst_pts = _board_corner_world_coords(self.square_size)[:, :2]  # XY only
+        dst_pts = _board_corner_world_coords(
+            self.square_size, center_y=self.center_y, table_z=self.table_z,
+        )[:, :2]  # XY only
 
         self._H, _ = cv2.findHomography(src_pts, dst_pts)
-        self._table_z = TABLE_HEIGHT
 
     def pixel_to_board(self, px: float, py: float) -> tuple[float, float, float]:
         """Convert actual image pixel to 3D board-plane coordinates.
@@ -96,7 +122,7 @@ class BoardCalibration:
         src = np.array([[[px, py]]], dtype=np.float64)
         dst = cv2.perspectiveTransform(src, self._H)
         wx, wy = dst[0, 0]
-        return (float(wx), float(wy), self._table_z)
+        return (float(wx), float(wy), self.table_z)
 
     def normalized_to_board(self, nx: int, ny: int) -> tuple[float, float, float]:
         """Convert Cosmos normalized coords (0-1000) to 3D board-plane.

@@ -52,7 +52,7 @@ class DINOChessPieceClassifier(nn.Module):
         super().__init__()
 
         # Pretrained DINO ViT-S/16 (smaller and faster than ViT-S/8)
-        self.dino = ViTModel.from_pretrained('facebook/dino-vits16')
+        self.dino = ViTModel.from_pretrained('facebook/dino-vits8')
         self.dino_feature_dim = self.dino.config.hidden_size  # 384 for ViT-S
 
         # Freeze DINO weights
@@ -100,7 +100,7 @@ class ChessPieceDataset(Dataset):
         print(f"Loaded {len(self.metadata)} {split} samples")
 
         # DINO preprocessing
-        self.processor = ViTImageProcessor.from_pretrained('facebook/dino-vits16')
+        self.processor = ViTImageProcessor.from_pretrained('facebook/dino-vits8')
 
     def __len__(self):
         return len(self.metadata)

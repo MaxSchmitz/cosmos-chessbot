@@ -27,6 +27,8 @@ dependencies = [
     "wandb>=0.16.0",
     "tqdm>=4.66.0",
     "lerobot>=0.3.2",
+    "mcp[cli]>=1.2.0",
+    "scipy>=1.10.0",
 ]
 
 [project.scripts]
