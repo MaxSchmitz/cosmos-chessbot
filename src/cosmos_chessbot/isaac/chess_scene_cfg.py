@@ -41,9 +41,11 @@ BOARD_CENTER = (0.0, BOARD_CENTER_OFFSET_Y, TABLE_HEIGHT)
 # Robot base position: at origin XY, on the table surface.
 ROBOT_POS = (0.0, 0.0, TABLE_HEIGHT)
 
-# Egocentric camera: behind and above robot, looking forward-down at the board
+# Egocentric camera: just behind and above robot, looking forward-down at the board
 # Offset relative to robot base (which sits at TABLE_HEIGHT)
-CAMERA_OFFSET = (0.0, -0.65, 0.45)
+# Y=-0.35 puts camera 35cm behind robot (clears the arm, sees full board)
+# Z=0.55 matches real camera height (55cm above table)
+CAMERA_OFFSET = (0.0, -0.35, 0.55)
 
 # --------------------------------------------------------------------------- #
 # Piece physics constants
@@ -94,7 +96,7 @@ class ChessSceneCfg(SingleArmTaskSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/base/front_camera",
         offset=TiledCameraCfg.OffsetCfg(
             pos=CAMERA_OFFSET,
-            rot=(0.0, 0.0, 0.9239, 0.3827),  # tilt forward-down + Z flip (ROS)
+            rot=(0.1650476, -0.9862856, 0.0, 0.0),  # LeIsaac default: forward-down ~70° (ROS)
             convention="ros",
         ),
         data_types=["rgb"],

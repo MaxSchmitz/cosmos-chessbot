@@ -29,6 +29,8 @@ dependencies = [
     "lerobot>=0.3.2",
     "mcp[cli]>=1.2.0",
     "scipy>=1.10.0",
+    "msgpack>=1.0.5",
+    "websockets>=11.0",
 ]
 
 [project.scripts]
@@ -37,3 +39,8 @@ cosmos-chessbot = "cosmos_chessbot.main:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
