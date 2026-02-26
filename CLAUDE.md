@@ -1,6 +1,39 @@
 # Cosmos Chessbot
 
-Physical AI chess robot: SO-101 arm + YOLO-DINO perception + Stockfish + Cosmos-Reason2 reasoning.
+Physical AI chess robot for NVIDIA Cosmos Cookoff (deadline **March 5, 2026 5pm PT**). SO-101 arm + YOLO-DINO perception + Stockfish + Cosmos-Reason2 reasoning. Prizes: $3k/$2k/$500.
+
+## Running scripts
+
+- Local: `uv run python` for project Python scripts
+- Brev server: `/home/ubuntu/.local/bin/uv run python` (uv not on PATH in non-interactive SSH)
+- macOS `._*` resource fork files appear in datasets copied to brev -- clean with `find data/ -name '._*' -delete`
+
+## Current state (Feb 26, 2026)
+
+### What's working
+- **MCP server**: 19 tools for camera, perception, chess, reasoning, robot control. Entry: `scripts/run_mcp_server.py`, config: `.mcp.json`
+- **URDF FK/IK**: `fk_urdf()` and `solve_ik_numerical()` in waypoint_policy.py. Sub-mm accuracy.
+- **YOLO piece detection**: mAP50=0.984. Weights on brev: `runs/detect/runs/detect/yolo26_chess_combined/weights/best.pt`
+- **DINO-MLP classifier**: vits8, 91.3% val acc. Weights: `models/dino_mlp/dino_mlp_best.pth` (84MB)
+- **Board calibration**: YOLO pose detects 4 corners, homography maps pixel-to-world
+- **Robot-to-world calibration**: fitted from 4 points, RMS=19.7mm (needs improvement)
+
+### Hardware issues
+- **Elbow presses against table** at ~100 degrees in home config. Fix: raise robot base 2-3cm.
+- **Cameras need USB replug** -- both died during overnight loop.
+
+### Brev server (ssh ubuntu@isaacsim)
+- NVIDIA L40S, 46GB VRAM
+- **Cosmos server currently stopped** (killed to free GPU). Restart: `cd ~/cosmos-chessbot && nohup ~/.local/bin/uv run python scripts/cosmos_server.py --port 8000 > /tmp/cosmos_server.log 2>&1 &`
+- Uses ~34GB VRAM when running. SSH tunnel needed: `ssh -f -N -L 8000:localhost:8000 ubuntu@isaacsim`
+- lerobot 0.3.2 installed. Pi0.5 needs 0.4.x.
+- YOLO and DINO training complete. Weights in `runs/` and `models/` dirs.
+
+### Next priorities
+1. **Explore pi0.5** on brev -- VLA model that could bypass IK calibration entirely
+2. **Fix elbow** -- raise robot base, replug cameras
+3. **Pick up a chess piece** -- either via geometric IK or pi0.5
+4. **Full game loop** with Cosmos integration for demo video
 
 ## Autonomous loop
 
