@@ -8,7 +8,7 @@ dependencies = [
     "accelerate>=1.12.0",
     "av>=15.0.0",
     "pillow>=12.0.0",
-    "transformers>=4.50.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@fix/lerobot_openpi",
     "torch>=2.9.0",
     "torchvision",
     "opencv-python>=4.8.0",
