@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--push-to-hub", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume adding to existing dataset")
     args = parser.parse_args()
 
     FollowerCls, FollowerCfg, LeaderCls, LeaderCfg = ROBOT_CONFIGS[args.robot_type]
@@ -102,16 +103,20 @@ def main():
         id=args.leader_id,
     ))
 
-    action_features = hw_to_dataset_features(follower.action_features, "action")
-    obs_features = hw_to_dataset_features(follower.observation_features, "observation")
-    dataset = LeRobotDataset.create(
-        repo_id=args.repo_id,
-        fps=args.fps,
-        features={**action_features, **obs_features},
-        robot_type=follower.name,
-        use_videos=True,
-        image_writer_threads=4,
-    )
+    if args.resume:
+        dataset = LeRobotDataset(args.repo_id)
+        print(f"Resuming dataset: {dataset.meta.total_episodes} episodes, {dataset.meta.total_frames} frames")
+    else:
+        action_features = hw_to_dataset_features(follower.action_features, "action")
+        obs_features = hw_to_dataset_features(follower.observation_features, "observation")
+        dataset = LeRobotDataset.create(
+            repo_id=args.repo_id,
+            fps=args.fps,
+            features={**action_features, **obs_features},
+            robot_type=follower.name,
+            use_videos=True,
+            image_writer_threads=4,
+        )
 
     follower.connect()
     leader.connect()
@@ -156,6 +161,13 @@ def main():
                 events["rerecord_episode"] = False
                 events["exit_early"] = False
                 dataset.clear_episode_buffer()
+                continue
+
+            # Guard against empty episodes (e.g. immediate exit)
+            if not dataset.episode_buffer or not dataset.episode_buffer.get("size", 0):
+                log_say("No frames recorded, skipping episode")
+                dataset.clear_episode_buffer()
+                events["exit_early"] = False
                 continue
 
             dataset.save_episode()
