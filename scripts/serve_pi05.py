@@ -78,7 +78,7 @@ def load_model(checkpoint_path: str, device: str = "cuda"):
         pretrained_path=checkpoint_path,
     )
 
-    logger.info(f"Model loaded on {device}. Action dim: {policy.config.action_dim}")
+    logger.info(f"Model loaded on {device}. Max action dim: {policy.config.max_action_dim}")
     return policy, preprocessor, postprocessor
 
 
@@ -90,15 +90,45 @@ def run_inference(policy, preprocessor, postprocessor, obs: dict) -> dict:
     """Run one inference step. Returns dict with 'action' array."""
     t0 = time.time()
 
+    # Convert msgpack-decoded obs to clean Python/numpy types
+    clean_obs = {}
+    for key, val in obs.items():
+        # msgpack decodes string keys as bytes
+        k = key.decode("utf-8") if isinstance(key, bytes) else key
+        if isinstance(val, np.ndarray):
+            clean_obs[k] = np.array(val, copy=True)  # fresh writable copy
+        elif isinstance(val, bytes):
+            clean_obs[k] = val.decode("utf-8")
+        else:
+            clean_obs[k] = val
+    obs = clean_obs
+    logger.info(f"Clean obs types: {[(k, type(v).__name__, v.shape if hasattr(v, 'shape') else '') for k, v in obs.items()]}")
+
+    # Add batch dimension to state if needed (preprocessor expects 2D)
+    if "observation.state" in obs and obs["observation.state"].ndim == 1:
+        obs["observation.state"] = obs["observation.state"].reshape(1, -1)
+
+    # Convert images from HWC uint8 to CHW float32 [0,1] (lerobot dataset format)
+    for key in list(obs.keys()):
+        if "image" in key and isinstance(obs[key], np.ndarray) and obs[key].ndim == 3:
+            img = obs[key]
+            if img.shape[-1] in (1, 3, 4):  # HWC format
+                img = np.transpose(img, (2, 0, 1))  # -> CHW
+            obs[key] = img.astype(np.float32) / 255.0
+
     batch = preprocessor(obs)
+    logger.info(f"Preprocessed batch keys: {list(batch.keys()) if isinstance(batch, dict) else type(batch)}")
 
     with torch.inference_mode():
         action = policy.select_action(batch)
 
+    logger.info(f"Raw action type: {type(action)}, "
+                f"shape: {action.shape if hasattr(action, 'shape') else 'N/A'}")
+
     action_np = postprocessor(action)
     if isinstance(action_np, torch.Tensor):
         action_np = action_np.cpu().numpy()
-    action_np = np.asarray(action_np, dtype=np.float32)
+    action_np = np.asarray(action_np, dtype=np.float32).flatten()
 
     dt = time.time() - t0
     logger.info(f"Inference: {dt:.3f}s, action shape: {action_np.shape}, "
@@ -138,9 +168,11 @@ async def handle_client(websocket, policy, preprocessor, postprocessor):
             keys = list(obs.keys()) if isinstance(obs, dict) else []
             logger.info(f"Received obs with keys: {keys}")
 
-            # Handle reset command
-            if obs.get("command") == "reset":
+            # Handle reset command (msgpack encodes keys as bytes)
+            cmd = obs.get("command") or obs.get(b"command")
+            if cmd in ("reset", b"reset"):
                 policy.reset()
+                logger.info("Policy reset (action queue cleared)")
                 await websocket.send(packer.pack({"status": "reset"}))
                 continue
 
@@ -149,7 +181,8 @@ async def handle_client(websocket, policy, preprocessor, postprocessor):
             await websocket.send(packer.pack(result))
 
     except Exception as e:
-        logger.error(f"Client error: {e}")
+        import traceback
+        logger.error(f"Client error: {e}\n{traceback.format_exc()}")
     finally:
         logger.info(f"Client disconnected: {websocket.remote_address}")
 

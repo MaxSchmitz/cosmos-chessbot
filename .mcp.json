@@ -7,6 +7,7 @@
         "CHESS_OVERHEAD_CAM": "1",
         "CHESS_WRIST_CAM": "0",
         "CHESS_COSMOS_URL": "http://localhost:8000",
+        "CHESS_PI05_URL": "ws://localhost:8001",
         "CHESS_DRY_RUN": "false"
       }
     }

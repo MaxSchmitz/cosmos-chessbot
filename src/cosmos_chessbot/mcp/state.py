@@ -69,6 +69,9 @@ class ServerState:
     # Policy
     waypoint_policy: Optional[WaypointPolicy] = None
 
+    # Pi0.5 remote server URL (e.g. "ws://localhost:8001")
+    pi05_url: Optional[str] = None
+
     # Board geometry config
     board_square_size: float = 0.05
     board_center_offset_y: float = 0.20

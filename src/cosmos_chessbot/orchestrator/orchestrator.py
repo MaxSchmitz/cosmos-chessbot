@@ -239,7 +239,7 @@ class ChessOrchestrator:
     def _connect_robot(self):
         """Connect to SO-101 via lerobot."""
         try:
-            from lerobot.robots.so101_follower import SO101Follower, SO101FollowerConfig
+            from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
             from lerobot.cameras.opencv import OpenCVCameraConfig
 
             logger.info("Connecting to SO-101 on %s...", self.config.robot_port)

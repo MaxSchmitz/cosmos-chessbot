@@ -25,7 +25,7 @@ logger = logging.getLogger("cosmos-mcp")
 def _connect_robot(port: str):
     """Connect to SO-101 via lerobot. Returns robot or None."""
     try:
-        from lerobot.robots.so101_follower import SO101Follower, SO101FollowerConfig
+        from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
         robot = SO101Follower(SO101FollowerConfig(
             port=port,
@@ -57,6 +57,7 @@ async def lifespan(app: FastMCP):
     wrist_cam_id = int(os.environ.get("CHESS_WRIST_CAM", "0"))
     stockfish_path = os.environ.get("CHESS_STOCKFISH", "stockfish")
     cosmos_url = os.environ.get("CHESS_COSMOS_URL")
+    pi05_url = os.environ.get("CHESS_PI05_URL", "ws://localhost:8001")
     robot_port = os.environ.get("CHESS_ROBOT_PORT", "/dev/tty.usbmodem58FA0962531")
     dry_run = os.environ.get("CHESS_DRY_RUN", "false").lower() == "true"
     yolo_pieces = os.environ.get(
@@ -125,6 +126,7 @@ async def lifespan(app: FastMCP):
         robot=robot,
         game_reasoning=game_reasoning,
         waypoint_policy=waypoint_policy,
+        pi05_url=pi05_url,
         board_square_size=square_size,
         board_center_offset_y=center_y,
         board_table_z=table_z,
@@ -155,5 +157,6 @@ from . import tools_camera  # noqa: E402, F401
 from . import tools_chess  # noqa: E402, F401
 from . import tools_perception  # noqa: E402, F401
 from . import tools_reasoning  # noqa: E402, F401
+from . import tools_pi05  # noqa: E402, F401
 from . import tools_robot  # noqa: E402, F401
 from . import tools_util  # noqa: E402, F401

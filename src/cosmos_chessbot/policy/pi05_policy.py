@@ -1,4 +1,4 @@
-"""π₀.₅ Vision-Language-Action policy — remote inference via openpi server."""
+"""pi0.5 Vision-Language-Action policy -- remote inference via WebSocket server."""
 
 import functools
 import logging
@@ -50,34 +50,28 @@ def _unpack_array(obj):
 _Packer = functools.partial(msgpack.Packer, default=_pack_array)
 _unpackb = functools.partial(msgpack.unpackb, object_hook=_unpack_array)
 
-# ---------------------------------------------------------------------------
-# SO-101 ↔ DROID observation mapping
-# ---------------------------------------------------------------------------
-
-# DROID expects 7 joints + 1 gripper; SO-101 has 5 joints + 1 gripper.
-# We zero-pad joints 6-7 when sending and truncate actions on return.
-SO101_ARM_JOINTS = 5
-DROID_ARM_JOINTS = 7
-DROID_ACTION_DIM = 8  # 7 joints + 1 gripper
+# SO-101: 5 arm joints + 1 gripper = 6 total
+SO101_ACTION_DIM = 6
 
 
 class PI05Policy(BasePolicy):
-    """π₀.₅ policy using remote openpi WebSocket server.
+    """pi0.5 policy using remote WebSocket server with lerobot-native format.
 
-    The openpi server (serve_policy.py) runs on a GPU machine.
-    This client sends observations over WebSocket and gets action chunks back.
+    The server (scripts/serve_pi05.py) runs on a GPU machine and loads
+    a fine-tuned pi0.5 checkpoint trained with lerobot.
 
     Usage:
         # Start server on brev:
-        #   cd ~/openpi && uv run scripts/serve_policy.py --env=DROID --port=8001
+        #   cd ~/cosmos-chessbot && uv run python scripts/serve_pi05.py \
+        #       --checkpoint outputs/pi05_chess/checkpoints/last/pretrained_model --port 8001
         # SSH tunnel from local:
         #   ssh -f -N -L 8001:localhost:8001 ubuntu@isaacsim
 
         policy = PI05Policy(host="localhost", port=8001)
         action = policy.select_action(
-            images={"overhead": overhead_img, "wrist": wrist_img},
+            images={"egocentric": overhead_img, "wrist": wrist_img},
             robot_state=np.array([...]),  # 6 values: 5 joints + 1 gripper
-            instruction="pick up the pawn on e2",
+            instruction="Pick the piece at e2 and place it at e4",
         )
     """
 
@@ -95,7 +89,7 @@ class PI05Policy(BasePolicy):
         self._connect()
 
     def _connect(self):
-        """Connect to the openpi WebSocket server."""
+        """Connect to the pi0.5 WebSocket server."""
         uri = f"ws://{self.host}:{self.port}"
         logger.info(f"Connecting to pi0.5 server at {uri}...")
         retries = 0
@@ -130,8 +124,12 @@ class PI05Policy(BasePolicy):
             self._connect()
 
     def reset(self):
-        """Reset policy state between episodes."""
-        pass
+        """Reset policy state between episodes (clears server-side action queue)."""
+        self._ensure_connected()
+        data = self._packer.pack({"command": "reset"})
+        self._ws.send(data)
+        response = _unpackb(self._ws.recv())
+        logger.info(f"Policy reset: {response}")
 
     def _prepare_obs(
         self,
@@ -139,18 +137,17 @@ class PI05Policy(BasePolicy):
         robot_state: np.ndarray,
         instruction: Optional[str] = None,
     ) -> dict:
-        """Convert our observation format to DROID observation format.
+        """Convert observations to lerobot-native format.
 
         Maps:
-            images["overhead"] → observation/exterior_image_1_left (224x224)
-            images["wrist"]    → observation/wrist_image_left (224x224)
-            robot_state[:5]    → observation/joint_position (zero-padded to 7)
-            robot_state[5]     → observation/gripper_position
-            instruction        → prompt
+            images["egocentric"/"overhead"] -> observation.images.egocentric (480x640)
+            images["wrist"]                 -> observation.images.wrist (480x640)
+            robot_state (6-dim)             -> observation.state
+            instruction                     -> task
         """
         # Get images, falling back to available keys
         overhead_key = next(
-            (k for k in ("overhead", "egocentric", "exterior") if k in images),
+            (k for k in ("egocentric", "overhead", "exterior") if k in images),
             next(iter(images)),
         )
         wrist_key = next(
@@ -158,32 +155,25 @@ class PI05Policy(BasePolicy):
             None,
         )
 
-        overhead_img = images[overhead_key].resize((224, 224))
+        # Send at training resolution (480x640) -- preprocessor handles resize to 224x224
+        overhead_img = images[overhead_key]
         overhead_arr = np.array(overhead_img, dtype=np.uint8)
 
         if wrist_key and wrist_key in images:
-            wrist_img = images[wrist_key].resize((224, 224))
+            wrist_img = images[wrist_key]
             wrist_arr = np.array(wrist_img, dtype=np.uint8)
         else:
-            wrist_arr = np.zeros((224, 224, 3), dtype=np.uint8)
+            # Use zeros if no wrist camera available
+            h, w = overhead_arr.shape[:2]
+            wrist_arr = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Pad SO-101 joints (5) to DROID joints (7)
-        state = np.asarray(robot_state, dtype=np.float64)
-        if len(state) == SO101_ARM_JOINTS + 1:
-            joint_pos = np.zeros(DROID_ARM_JOINTS, dtype=np.float64)
-            joint_pos[:SO101_ARM_JOINTS] = state[:SO101_ARM_JOINTS]
-            gripper_pos = np.array([state[SO101_ARM_JOINTS]], dtype=np.float64)
-        else:
-            # Assume already in DROID format
-            joint_pos = state[:DROID_ARM_JOINTS]
-            gripper_pos = np.array([state[DROID_ARM_JOINTS]], dtype=np.float64)
+        state = np.asarray(robot_state, dtype=np.float32)
 
         obs = {
-            "observation/exterior_image_1_left": overhead_arr,
-            "observation/wrist_image_left": wrist_arr,
-            "observation/joint_position": joint_pos,
-            "observation/gripper_position": gripper_pos,
-            "prompt": instruction or "pick up the chess piece",
+            "observation.images.egocentric": overhead_arr,
+            "observation.images.wrist": wrist_arr,
+            "observation.state": state,
+            "task": instruction or "pick up the chess piece",
         }
         return obs
 
@@ -206,32 +196,26 @@ class PI05Policy(BasePolicy):
         """Select action given current observations.
 
         Args:
-            images: Camera views {"overhead": img, "wrist": img}
+            images: Camera views {"egocentric": img, "wrist": img}
             robot_state: [5 joints + 1 gripper] for SO-101
             instruction: Language instruction for pi0.5
 
         Returns:
-            PolicyAction with (horizon, 6) actions for SO-101
+            PolicyAction with single (6,) action for SO-101
         """
         obs = self._prepare_obs(images, robot_state, instruction)
         result = self._infer(obs)
 
-        # result["actions"] is (horizon, 8) for DROID
-        actions = np.array(result["actions"])
-
-        # Map back to SO-101: take first 5 joints + last dim (gripper)
-        so101_actions = np.zeros((actions.shape[0], SO101_ARM_JOINTS + 1))
-        so101_actions[:, :SO101_ARM_JOINTS] = actions[:, :SO101_ARM_JOINTS]
-        so101_actions[:, SO101_ARM_JOINTS] = actions[:, DROID_ARM_JOINTS]  # gripper
+        # Server returns single action (6,) from its internal chunk queue
+        action = np.array(result["action"], dtype=np.float32)
 
         return PolicyAction(
-            actions=so101_actions,
+            actions=action.reshape(1, -1),  # (1, 6) for consistency
             success_probability=1.0,
             metadata={
-                "policy": "pi05_remote",
-                "raw_actions_shape": actions.shape,
+                "policy": "pi05_finetuned",
                 "instruction": instruction,
-                "timing": result.get("policy_timing", {}),
+                "inference_time": result.get("inference_time", 0),
             },
         )
 
