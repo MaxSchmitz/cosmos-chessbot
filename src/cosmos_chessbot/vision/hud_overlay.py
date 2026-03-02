@@ -212,3 +212,185 @@ def apply_hud(
     source_px = resolve_location(source, corners, homography)
     target_px = resolve_location(target, corners, homography)
     return draw_hud(image, source_px, target_px)
+
+
+# ---------------------------------------------------------------------------
+# Drop zone computation for captured pieces
+# ---------------------------------------------------------------------------
+
+def compute_drop_zone(
+    corners: np.ndarray,
+    side: str = "white",
+    offset_squares: float = 1.5,
+) -> tuple[int, int]:
+    """Compute a drop zone pixel location outside the board edge.
+
+    White captures go to the right side (near H-file), black captures go
+    to the left side (near A-file), matching tournament convention.
+
+    Args:
+        corners: (4, 2) float array in [TL, TR, BR, BL] order.
+        side: "white" (right side) or "black" (left side) -- the color
+            of the captured piece being removed.
+        offset_squares: How far outside the board edge, in square-widths.
+
+    Returns:
+        (x, y) integer pixel coordinates for the drop zone.
+    """
+    H = compute_homography(corners)
+    H_inv = np.linalg.inv(H)
+
+    if side == "white":
+        # Right side: midpoint of TR-BR edge, offset further right
+        board_x = 8.0 + offset_squares
+        board_y = 4.0  # vertical center
+    else:
+        # Left side: midpoint of TL-BL edge, offset further left
+        board_x = -offset_squares
+        board_y = 4.0
+
+    pt = np.array([[[board_x, board_y]]], dtype=np.float64)
+    px = cv2.perspectiveTransform(pt, H_inv)[0, 0]
+    return int(round(px[0])), int(round(px[1]))
+
+
+def cosmos_drop_zone(
+    image: np.ndarray,
+    captured_piece: str,
+    cosmos_url: str = "http://localhost:8000",
+    timeout: float = 30.0,
+) -> tuple[int, int] | None:
+    """Ask Cosmos-Reason2 where to place a captured piece.
+
+    Sends the overhead image to the Cosmos server and asks it to reason
+    about the best location to place a captured piece off the board.
+
+    Args:
+        image: HWC uint8 overhead camera image.
+        captured_piece: Description of the piece (e.g. "black pawn", "white knight").
+        cosmos_url: URL of the Cosmos reasoning server.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        (x, y) pixel coordinates, or None if reasoning fails.
+    """
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image as PILImage
+
+    # Encode image to base64 PNG
+    if image.shape[2] == 3:
+        pil_img = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    else:
+        pil_img = PILImage.fromarray(image)
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    h, w = image.shape[:2]
+    prompt = f"""Looking at this overhead view of a chess board, I need to place a captured {captured_piece} off the board.
+
+Find a good location on the table next to the board where captured pieces should go. The location should be:
+- Outside the board but still on the table surface
+- On the right side of the board for captured white pieces, left side for captured black pieces
+- Clear of any obstacles (robot arm, other objects)
+- A reasonable distance from the board edge (not too far, not too close)
+
+The image is {w}x{h} pixels. Respond in JSON:
+{{
+    "x": <pixel x coordinate>,
+    "y": <pixel y coordinate>,
+    "reasoning": "brief explanation of why this location"
+}}
+"""
+
+    try:
+        # Use the action reasoning endpoint with a custom prompt
+        # by calling the trajectory endpoint (it returns point_2d coords)
+        resp = httpx.post(
+            f"{cosmos_url}/reason/action",
+            json={
+                "image_base64": image_b64,
+                "move_uci": "capture",
+                "from_square": "board",
+                "to_square": "off-board",
+                "max_new_tokens": 256,
+                "temperature": 0.1,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Parse coordinates from the reasoning text
+        reasoning = data.get("reasoning", "")
+        # Try to extract JSON with x,y from the response
+        coord_match = re.search(r'"x"\s*:\s*(\d+).*?"y"\s*:\s*(\d+)', reasoning, re.DOTALL)
+        if coord_match:
+            x = int(coord_match.group(1))
+            y = int(coord_match.group(2))
+            # Clamp to image bounds
+            x = max(0, min(x, w - 1))
+            y = max(0, min(y, h - 1))
+            return x, y
+
+    except Exception:
+        pass
+
+    return None
+
+
+def drop_zone(
+    image: np.ndarray,
+    captured_piece: str = "piece",
+    side: str | None = None,
+    corners: np.ndarray | None = None,
+    cosmos_url: str | None = None,
+    corner_weights: str | Path | None = None,
+) -> str:
+    """Compute a drop zone for a captured piece.
+
+    Tries Cosmos-Reason2 first (if cosmos_url is provided), falls back to
+    geometric computation based on board corners.
+
+    Args:
+        image: HWC uint8 overhead camera image.
+        captured_piece: Description like "black pawn" or "white knight".
+        side: "white" or "black" (color of captured piece). If None,
+            inferred from captured_piece string.
+        corners: Pre-detected (4, 2) corners in [TL, TR, BR, BL] order.
+        cosmos_url: Cosmos-Reason2 server URL. If provided, tries Cosmos first.
+        corner_weights: YOLO pose weights for corner auto-detection.
+
+    Returns:
+        Location string "x,y" suitable for passing to apply_hud().
+    """
+    # Infer side from piece description if not given
+    if side is None:
+        lower = captured_piece.lower()
+        if "white" in lower:
+            side = "white"
+        elif "black" in lower:
+            side = "black"
+        else:
+            side = "white"  # default
+
+    # Try Cosmos-Reason2
+    if cosmos_url:
+        px = cosmos_drop_zone(image, captured_piece, cosmos_url=cosmos_url)
+        if px is not None:
+            return f"{px[0]},{px[1]}"
+
+    # Fall back to geometric
+    if corners is None:
+        corners = detect_corners(
+            image,
+            corner_weights=corner_weights or _DEFAULT_CORNER_WEIGHTS,
+        )
+    if corners is None:
+        raise RuntimeError("Could not detect board corners for drop zone")
+
+    px = compute_drop_zone(corners, side=side)
+    return f"{px[0]},{px[1]}"
