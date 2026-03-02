@@ -243,6 +243,23 @@ def send_joints(robot_wrapper, targets):
 # Server communication
 # ---------------------------------------------------------------------------
 
+def interpolate_chunk(chunk, factor):
+    """Interpolate between consecutive actions to slow down motion.
+
+    A factor of 2 inserts one intermediate step between each pair,
+    doubling the chunk length (and halving effective speed at same fps).
+    """
+    if factor <= 1:
+        return chunk
+    n, dim = chunk.shape
+    indices = np.arange(n)
+    new_indices = np.linspace(0, n - 1, (n - 1) * factor + 1)
+    result = np.zeros((len(new_indices), dim), dtype=chunk.dtype)
+    for d in range(dim):
+        result[:, d] = np.interp(new_indices, indices, chunk[:, d])
+    return result
+
+
 def request_chunk(ws, packer, obs):
     """Send observation to server, receive action chunk and original actions."""
     ws.send(packer.pack(obs))
@@ -273,7 +290,7 @@ def request_chunk(ws, packer, obs):
 # ---------------------------------------------------------------------------
 
 def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
-                   shutdown_event, fps, use_hud, hud_args, task):
+                   shutdown_event, fps, use_hud, hud_args, task, slowdown=1):
     """Background thread: capture observations, request chunks, update queue."""
     time_per_action = 1.0 / fps
     queue_threshold = 30  # request new chunk when queue drops to this size
@@ -326,6 +343,10 @@ def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
 
                 chunk, original, inf_time = request_chunk(ws, packer, obs)
                 chunk_count += 1
+
+                # Interpolate to slow motion (don't interpolate originals -- RTC
+                # needs raw policy outputs for guidance)
+                chunk = interpolate_chunk(chunk, slowdown)
 
                 new_latency = time.perf_counter() - t0
                 new_delay = math.ceil(new_latency / time_per_action)
@@ -406,7 +427,7 @@ def run_async(robot_wrapper, ws, packer, args, use_hud, task, metadata):
     inf_thread = Thread(
         target=inference_loop,
         args=(robot_wrapper, ws, packer, action_queue, latency_tracker,
-              shutdown_event, args.fps, use_hud, hud_args, task),
+              shutdown_event, args.fps, use_hud, hud_args, task, args.slowdown),
         daemon=True, name="Inference",
     )
     exec_thread = Thread(
@@ -477,6 +498,7 @@ def run_sequential(robot_wrapper, ws, packer, args, use_hud, task):
             }
 
             chunk, _, inf_time = request_chunk(ws, packer, obs)
+            chunk = interpolate_chunk(chunk, args.slowdown)
             chunk_count += 1
 
             if chunk_count <= 2:
@@ -515,11 +537,13 @@ def main():
                         default="/Users/max/.cache/huggingface/lerobot/calibration/robots/so101_follower")
     parser.add_argument("--server-url", type=str, default="ws://localhost:8001")
     parser.add_argument("--task", type=str, default="Pick up the piece and place it in the bowl")
-    parser.add_argument("--num-steps", type=int, default=700,
+    parser.add_argument("--num-steps", type=int, default=1000,
                         help="Max action steps to execute")
     parser.add_argument("--fps", type=float, default=30, help="Action execution rate")
     parser.add_argument("--source", type=str, default=None, help="HUD source square (e.g. e2)")
     parser.add_argument("--target", type=str, default=None, help="HUD target square (e.g. e4)")
+    parser.add_argument("--slowdown", type=int, default=1,
+                        help="Interpolation factor to slow motion (2=half speed, 3=third)")
     parser.add_argument("--dry-run", action="store_true", help="Inference only, don't execute")
     parser.add_argument("--sequential", action="store_true",
                         help="Use sequential chunking (no async, for debugging)")
@@ -582,6 +606,19 @@ def main():
         run_async(robot_wrapper, ws, packer, args, use_hud, task, metadata)
 
     ws.close()
+
+    # Return to home position
+    HOME = [7.5, -98.0, 100.0, 63.0, 0.0, 2.0]
+    print("Returning to home...")
+    current, _, _ = capture_observation(robot_wrapper)
+    steps = 60  # ~2s at 30fps
+    for i in range(1, steps + 1):
+        t = i / steps
+        interp = [current[j] + t * (HOME[j] - current[j]) for j in range(6)]
+        send_joints(robot_wrapper, interp)
+        time.sleep(1.0 / 30)
+    print("Home")
+
     robot_wrapper.disconnect()
     print("Done")
 
