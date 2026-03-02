@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Record chess manipulation episodes with per-move task descriptions.
+"""Record manipulation episodes with per-episode task descriptions.
 
-Each episode is tagged with the task string the orchestrator will produce at
-inference time, so pi0.5 learns to condition on the correct language input.
+Each episode is tagged with a task string so pi0.5 learns to condition on
+the correct language input.
 
 Usage:
+    # Chess moves (prompted per episode):
     uv run python scripts/collect_episodes.py \
-        --robot-type so101 \
+        --follower-port /dev/tty.usbmodem... \
+        --leader-port /dev/tty.usbmodem...
+
+    # Fixed task (same task string for all episodes):
+    uv run python scripts/collect_episodes.py \
         --follower-port /dev/tty.usbmodem... \
         --leader-port /dev/tty.usbmodem... \
-        --repo-id cosmos-chessbot/chess-manipulation
+        --task "Pick up the piece and place it in the bowl" \
+        --repo-id maux/chess-bowl-pick-place
 
-Move input: source and target square, e.g. "e2e4", "e2 e4", or "e2-e4".
 Keyboard controls during recording:
     Right arrow  -- end episode early
     Left arrow   -- cancel and re-record
@@ -19,6 +24,8 @@ Keyboard controls during recording:
 """
 
 import re
+
+import numpy as np
 
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -82,8 +89,16 @@ def main():
     parser.add_argument("--episode-time-s", type=float, default=30.0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--task", type=str, default=None,
+                        help="Fixed task string for all episodes (skips move prompt)")
     parser.add_argument("--push-to-hub", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Resume adding to existing dataset")
+    parser.add_argument("--hud", action="store_true",
+                        help="Enable HUD overlay on egocentric camera (visual move encoding)")
+    parser.add_argument("--source", type=str, default=None,
+                        help="Source location for HUD (square name or 'x,y' pixels)")
+    parser.add_argument("--target", type=str, default=None,
+                        help="Target location for HUD (square name or 'x,y' pixels)")
     args = parser.parse_args()
 
     FollowerCls, FollowerCfg, LeaderCls, LeaderCfg = ROBOT_CONFIGS[args.robot_type]
@@ -118,8 +133,53 @@ def main():
             image_writer_threads=4,
         )
 
+    # --- HUD overlay setup ---
+    _hud_state = {"source": args.source, "target": args.target, "corners": None, "homography": None}
+
+    if args.hud:
+        from cosmos_chessbot.vision.hud_overlay import (
+            apply_hud,
+            compute_homography,
+            detect_corners,
+        )
+        print("HUD: enabled -- corners will be auto-detected from first frame via YOLO pose")
+
     follower.connect()
     leader.connect()
+
+    # Monkey-patch get_observation to inject HUD markers on egocentric image
+    if args.hud:
+        _orig_get_observation = follower.get_observation
+
+        def _hud_get_observation():
+            obs = _orig_get_observation()
+            src = _hud_state.get("source")
+            tgt = _hud_state.get("target")
+            if src and tgt and "observation.images.egocentric" in obs:
+                img = obs["observation.images.egocentric"]
+                if not isinstance(img, np.ndarray):
+                    img = np.array(img)
+                # Detect corners once from first frame, cache for episode
+                if _hud_state["corners"] is None:
+                    corners = detect_corners(img)
+                    if corners is not None:
+                        _hud_state["corners"] = corners
+                        _hud_state["homography"] = compute_homography(corners)
+                        print(f"HUD: detected board corners from first frame")
+                    else:
+                        print("HUD: WARNING -- could not detect board corners")
+                apply_hud(
+                    img,
+                    src,
+                    tgt,
+                    corners=_hud_state.get("corners"),
+                    homography=_hud_state.get("homography"),
+                )
+                obs["observation.images.egocentric"] = img
+            return obs
+
+        follower.get_observation = _hud_get_observation
+
     listener, events = init_keyboard_listener()
     init_rerun(session_name="chess_recording")
     teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
@@ -127,20 +187,41 @@ def main():
     episode_idx = 0
     try:
         while not events["stop_recording"]:
-            # Prompt for move before each episode
             print(f"\n--- Episode {episode_idx + 1} ---")
-            while True:
-                raw = input("Enter move (e.g. e2e4) or 'q' to quit: ").strip()
-                if raw.lower() == "q":
-                    raise KeyboardInterrupt
-                parsed = parse_move(raw)
-                if parsed:
-                    src, dst = parsed
-                    task = move_to_task(src, dst)
-                    print(f"  Task: {task}")
-                    print("  Teleoperate the move. Right arrow to end early.")
-                    break
-                print("  Invalid. Use: e2e4, e2 e4, or e2-e4")
+
+            # Re-detect corners each episode in case the board shifted
+            if args.hud:
+                _hud_state["corners"] = None
+                _hud_state["homography"] = None
+
+            if args.task:
+                # Fixed task mode
+                task = args.task
+                if args.hud and args.source and args.target:
+                    _hud_state["source"] = args.source
+                    _hud_state["target"] = args.target
+                    task = "Pick up the highlighted piece and place it at the target"
+                print(f"  Task: {task}")
+                input("  Press Enter to start recording...")
+            else:
+                # Chess move prompt mode
+                while True:
+                    raw = input("Enter move (e.g. e2e4) or 'q' to quit: ").strip()
+                    if raw.lower() == "q":
+                        raise KeyboardInterrupt
+                    parsed = parse_move(raw)
+                    if parsed:
+                        src, dst = parsed
+                        if args.hud:
+                            _hud_state["source"] = src
+                            _hud_state["target"] = dst
+                            task = "Pick up the highlighted piece and place it at the target"
+                        else:
+                            task = move_to_task(src, dst)
+                        print(f"  Task: {task}")
+                        print("  Teleoperate the move. Right arrow to end early.")
+                        break
+                    print("  Invalid. Use: e2e4, e2 e4, or e2-e4")
 
             record_loop(
                 robot=follower,
