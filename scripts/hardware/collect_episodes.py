@@ -23,7 +23,10 @@ Keyboard controls during recording:
     ESC          -- stop session
 """
 
+import json
+import random
 import re
+from pathlib import Path
 
 import numpy as np
 
@@ -75,6 +78,14 @@ def move_to_task(src: str, dst: str) -> str:
     return f"Pick the piece at {src} and place it at {dst}"
 
 
+def generate_random_move() -> tuple[str, str]:
+    """Generate a random source and target square for teleoperation practice."""
+    squares = sorted(VALID_SQUARES)
+    src = random.choice(squares)
+    dst = random.choice([s for s in squares if s != src])
+    return src, dst
+
+
 def main():
     import argparse
 
@@ -99,7 +110,12 @@ def main():
                         help="Source location for HUD (square name or 'x,y' pixels)")
     parser.add_argument("--target", type=str, default=None,
                         help="Target location for HUD (square name or 'x,y' pixels)")
+    parser.add_argument("--random-moves", action="store_true",
+                        help="Randomly generate source/target squares each episode (records raw, no HUD)")
     args = parser.parse_args()
+
+    if args.random_moves and (args.task or args.hud):
+        parser.error("--random-moves is mutually exclusive with --task and --hud")
 
     FollowerCls, FollowerCfg, LeaderCls, LeaderCfg = ROBOT_CONFIGS[args.robot_type]
 
@@ -132,6 +148,14 @@ def main():
             use_videos=True,
             image_writer_threads=4,
         )
+
+    # --- moves.json for --random-moves ---
+    moves_path = Path(dataset.root) / "moves.json" if args.random_moves else None
+    moves_data: dict[str, dict] = {}
+    if args.random_moves and args.resume and moves_path and moves_path.exists():
+        with open(moves_path) as f:
+            moves_data = json.load(f)
+        print(f"Loaded {len(moves_data)} existing moves from {moves_path}")
 
     # --- HUD overlay setup ---
     _hud_state = {"source": args.source, "target": args.target, "corners": None, "homography": None}
@@ -184,7 +208,7 @@ def main():
     init_rerun(session_name="chess_recording")
     teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
 
-    episode_idx = 0
+    episode_idx = dataset.meta.total_episodes if args.resume else 0
     try:
         while not events["stop_recording"]:
             print(f"\n--- Episode {episode_idx + 1} ---")
@@ -194,7 +218,14 @@ def main():
                 _hud_state["corners"] = None
                 _hud_state["homography"] = None
 
-            if args.task:
+            if args.random_moves:
+                # Random move mode -- raw images, HUD applied post-hoc
+                src, dst = generate_random_move()
+                _current_move = {"source": src, "target": dst}
+                task = "Pick and place"
+                print(f"  >> Pick from {src.upper()}, place at {dst.upper()}")
+                input("  Press Enter to start recording...")
+            elif args.task:
                 # Fixed task mode
                 task = args.task
                 if args.hud and args.source and args.target:
@@ -252,6 +283,13 @@ def main():
                 continue
 
             dataset.save_episode()
+
+            # Save move info for --random-moves (crash-safe: write after each episode)
+            if args.random_moves:
+                moves_data[str(episode_idx)] = _current_move
+                with open(moves_path, "w") as f:
+                    json.dump(moves_data, f, indent=2)
+
             episode_idx += 1
             log_say(f"Saved episode {episode_idx}: {task}")
 
