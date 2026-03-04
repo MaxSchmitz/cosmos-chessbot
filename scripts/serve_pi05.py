@@ -134,6 +134,10 @@ def run_inference(policy, preprocessor, postprocessor, obs: dict, device: str = 
         plco_shape = prev_chunk_left_over.shape if prev_chunk_left_over is not None else None
         logger.info(f"RTC params: inference_delay={inference_delay}, prev_chunk_left_over={plco_shape}")
 
+    # Task must be a list of strings (not bare string) -- see lerobot reference
+    if "task" in obs and isinstance(obs["task"], str):
+        obs["task"] = [obs["task"]]
+
     # Add batch dimension to state if needed (preprocessor expects 2D)
     if "observation.state" in obs and obs["observation.state"].ndim == 1:
         obs["observation.state"] = obs["observation.state"].reshape(1, -1)

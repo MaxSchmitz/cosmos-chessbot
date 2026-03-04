@@ -147,7 +147,14 @@ class ActionQueue:
         with self.lock:
             if self.original is None:
                 return None
-            left = self.original[self.index:]
+            # Map interpolated queue index back to original action index
+            # (original and queue may differ in length when slowdown > 1)
+            if self.queue is not None and len(self.queue) > 0 and len(self.original) > 0:
+                ratio = len(self.original) / len(self.queue)
+                orig_idx = min(int(self.index * ratio), len(self.original))
+            else:
+                orig_idx = self.index
+            left = self.original[orig_idx:]
             return left.copy() if len(left) > 0 else None
 
     def replace(self, original_actions, processed_actions, inference_delay,
@@ -160,12 +167,19 @@ class ActionQueue:
                 if consumed_during_inference < 0:
                     consumed_during_inference = 0
                 # Use actual consumption if it differs from predicted delay
-                skip = min(max(inference_delay, consumed_during_inference),
-                           len(processed_actions))
+                skip_processed = min(max(inference_delay, consumed_during_inference),
+                                     len(processed_actions))
             else:
-                skip = min(inference_delay, len(processed_actions))
-            self.original = original_actions[skip:].copy()
-            self.queue = processed_actions[skip:].copy()
+                skip_processed = min(inference_delay, len(processed_actions))
+            # Scale skip for original actions (may differ in length from processed
+            # when slowdown interpolation is applied)
+            if len(processed_actions) > 0 and len(original_actions) > 0:
+                ratio = len(original_actions) / len(processed_actions)
+                skip_original = min(int(skip_processed * ratio), len(original_actions))
+            else:
+                skip_original = skip_processed
+            self.original = original_actions[skip_original:].copy()
+            self.queue = processed_actions[skip_processed:].copy()
             self.index = 0
 
 
@@ -290,7 +304,8 @@ def request_chunk(ws, packer, obs):
 # ---------------------------------------------------------------------------
 
 def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
-                   shutdown_event, fps, use_hud, hud_args, task, slowdown=1):
+                   shutdown_event, fps, use_hud, hud_args, task, slowdown=1,
+                   no_rtc=False):
     """Background thread: capture observations, request chunks, update queue."""
     time_per_action = 1.0 / fps
     queue_threshold = 30  # request new chunk when queue drops to this size
@@ -329,6 +344,39 @@ def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
                     apply_hud(overhead, hud_args["source"], hud_args["target"],
                               hud_corners, hud_H)
 
+                    # Save debug frame with board grid on first HUD application
+                    if chunk_count == 0:
+                        import cv2 as _cv2
+                        from cosmos_chessbot.vision.hud_overlay import resolve_location
+                        debug_img = overhead.copy()
+                        if hud_corners is not None:
+                            labels = ["TL(a8)", "TR(h8)", "BR(h1)", "BL(a1)"]
+                            for ci, (cx, cy) in enumerate(hud_corners):
+                                pt = (int(cx), int(cy))
+                                _cv2.circle(debug_img, pt, 6, (0, 0, 255), -1, _cv2.LINE_AA)
+                                _cv2.putText(debug_img, labels[ci], (pt[0]+8, pt[1]-4),
+                                             _cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                            for i in range(4):
+                                p1 = (int(hud_corners[i][0]), int(hud_corners[i][1]))
+                                p2 = (int(hud_corners[(i+1)%4][0]), int(hud_corners[(i+1)%4][1]))
+                                _cv2.line(debug_img, p1, p2, (0, 0, 255), 2, _cv2.LINE_AA)
+                            for file in "abcdefgh":
+                                for rank in "12345678":
+                                    sq = f"{file}{rank}"
+                                    px = resolve_location(sq, hud_corners, hud_H)
+                                    _cv2.circle(debug_img, px, 3, (0, 255, 255), -1)
+                                    _cv2.putText(debug_img, sq, (px[0]+4, px[1]-2),
+                                                 _cv2.FONT_HERSHEY_SIMPLEX, 0.25, (0, 255, 255), 1)
+                        _cv2.imwrite("/tmp/hud_debug.png", debug_img)
+                        _cv2.imwrite("/tmp/hud_policy_frame.png", overhead)
+                        print("HUD: saved debug frame to /tmp/hud_debug.png")
+
+                # Save policy frames periodically
+                import cv2 as _cv2
+                if chunk_count < 5 or chunk_count % 10 == 0:
+                    _cv2.imwrite(f"/tmp/policy_frame_{chunk_count:03d}.png", overhead)
+                    _cv2.imwrite(f"/tmp/policy_wrist_{chunk_count:03d}.png", wrist)
+
                 obs = {
                     "observation.images.egocentric": overhead,
                     "observation.images.wrist": wrist,
@@ -337,7 +385,7 @@ def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
                 }
 
                 # Add RTC params if we have prior chunk data
-                if prev_left_over is not None:
+                if not no_rtc and prev_left_over is not None:
                     obs["prev_chunk_left_over"] = prev_left_over
                     obs["inference_delay"] = inference_delay
 
@@ -427,7 +475,8 @@ def run_async(robot_wrapper, ws, packer, args, use_hud, task, metadata):
     inf_thread = Thread(
         target=inference_loop,
         args=(robot_wrapper, ws, packer, action_queue, latency_tracker,
-              shutdown_event, args.fps, use_hud, hud_args, task, args.slowdown),
+              shutdown_event, args.fps, use_hud, hud_args, task, args.slowdown,
+              args.no_rtc),
         daemon=True, name="Inference",
     )
     exec_thread = Thread(
@@ -437,8 +486,12 @@ def run_async(robot_wrapper, ws, packer, args, use_hud, task, metadata):
         daemon=True, name="Execution",
     )
 
-    rtc_status = "on" if (metadata.get(b"rtc_enabled") or metadata.get("rtc_enabled")) else "off"
-    print(f"Mode: async inference (RTC {rtc_status} on server)")
+    rtc_server = metadata.get(b"rtc_enabled") or metadata.get("rtc_enabled")
+    if args.no_rtc:
+        rtc_label = "disabled by --no-rtc"
+    else:
+        rtc_label = "on" if rtc_server else "off on server"
+    print(f"Mode: async inference (RTC {rtc_label})")
     print("-" * 60)
     inf_thread.start()
     exec_thread.start()
@@ -481,6 +534,11 @@ def run_sequential(robot_wrapper, ws, packer, args, use_hud, task):
                 from cosmos_chessbot.vision.hud_overlay import (
                     apply_hud, compute_homography, detect_corners,
                 )
+                # Save raw frame before any HUD modification
+                if hud_corners is None:
+                    import cv2 as _cv2
+                    _cv2.imwrite("/tmp/hud_raw_frame.png", overhead.copy())
+                    print("HUD: saved raw frame to /tmp/hud_raw_frame.png")
                 if hud_corners is None:
                     hud_corners = detect_corners(overhead)
                     if hud_corners is not None:
@@ -489,6 +547,37 @@ def run_sequential(robot_wrapper, ws, packer, args, use_hud, task):
                     else:
                         print("HUD: WARNING - could not detect board corners")
                 apply_hud(overhead, args.source, args.target, hud_corners, hud_H)
+
+                # Save debug frame with board grid on first HUD application
+                if chunk_count == 0:
+                    import cv2 as _cv2
+                    from cosmos_chessbot.vision.hud_overlay import resolve_location
+                    debug_img = overhead.copy()
+                    # Draw detected corners
+                    if hud_corners is not None:
+                        labels = ["TL(a8)", "TR(h8)", "BR(h1)", "BL(a1)"]
+                        for ci, (cx, cy) in enumerate(hud_corners):
+                            pt = (int(cx), int(cy))
+                            _cv2.circle(debug_img, pt, 6, (0, 0, 255), -1, _cv2.LINE_AA)
+                            _cv2.putText(debug_img, labels[ci], (pt[0]+8, pt[1]-4),
+                                         _cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                        # Draw board outline
+                        for i in range(4):
+                            p1 = (int(hud_corners[i][0]), int(hud_corners[i][1]))
+                            p2 = (int(hud_corners[(i+1)%4][0]), int(hud_corners[(i+1)%4][1]))
+                            _cv2.line(debug_img, p1, p2, (0, 0, 255), 2, _cv2.LINE_AA)
+                        # Draw all 64 square centers
+                        for file in "abcdefgh":
+                            for rank in "12345678":
+                                sq = f"{file}{rank}"
+                                px = resolve_location(sq, hud_corners, hud_H)
+                                _cv2.circle(debug_img, px, 3, (0, 255, 255), -1)
+                                _cv2.putText(debug_img, sq, (px[0]+4, px[1]-2),
+                                             _cv2.FONT_HERSHEY_SIMPLEX, 0.25, (0, 255, 255), 1)
+                    _cv2.imwrite("/tmp/hud_debug.png", debug_img)
+                    # Also save the actual frame being sent to the policy
+                    _cv2.imwrite("/tmp/hud_policy_frame.png", overhead)
+                    print("HUD: saved debug frame to /tmp/hud_debug.png")
 
             obs = {
                 "observation.images.egocentric": overhead,
@@ -545,6 +634,8 @@ def main():
     parser.add_argument("--slowdown", type=int, default=1,
                         help="Interpolation factor to slow motion (2=half speed, 3=third)")
     parser.add_argument("--dry-run", action="store_true", help="Inference only, don't execute")
+    parser.add_argument("--no-rtc", action="store_true",
+                        help="Disable sending RTC guidance to server")
     parser.add_argument("--sequential", action="store_true",
                         help="Use sequential chunking (no async, for debugging)")
     parser.add_argument("--overhead-cam", type=int, default=1)
@@ -556,6 +647,10 @@ def main():
     if use_hud:
         task = "Pick up the highlighted piece and place it at the target"
         print(f"HUD enabled: source={args.source} target={args.target}")
+
+    # Corner detection happens from the first observation frame after robot
+    # connection -- same pattern as collect_episodes.py during data collection.
+    # The arm should already be at park pose (clear view of the board).
 
     # Connect robot (patch out interactive calibration prompt)
     import builtins
@@ -579,7 +674,7 @@ def main():
     robot_wrapper = RobotWrapper(robot)
     print("Robot connected")
 
-    # Show initial state
+    # Show initial state (arm should already be at park)
     joints, _, _ = capture_observation(robot_wrapper, log_first=True)
     print(f"Initial joints: pan={joints[0]:.1f} lift={joints[1]:.1f} elbow={joints[2]:.1f} "
           f"wrist={joints[3]:.1f} roll={joints[4]:.1f} grip={joints[5]:.1f}")
@@ -607,17 +702,17 @@ def main():
 
     ws.close()
 
-    # Return to home position
-    HOME = [7.5, -98.0, 100.0, 63.0, 0.0, 2.0]
-    print("Returning to home...")
+    # Return to park position
+    PARK = [-80.0, -99.1, 95.2, 71.7, -78.0, 3.1]
+    print("Returning to park...")
     current, _, _ = capture_observation(robot_wrapper)
     steps = 60  # ~2s at 30fps
     for i in range(1, steps + 1):
         t = i / steps
-        interp = [current[j] + t * (HOME[j] - current[j]) for j in range(6)]
+        interp = [current[j] + t * (PARK[j] - current[j]) for j in range(6)]
         send_joints(robot_wrapper, interp)
         time.sleep(1.0 / 30)
-    print("Home")
+    print("Parked")
 
     robot_wrapper.disconnect()
     print("Done")

@@ -58,7 +58,17 @@ class OrchestratorConfig:
     policy_checkpoint: Optional[Path] = None
     """Path to policy checkpoint (None uses base model)"""
     enable_planning: bool = True
-    """Enable planning for Cosmos Policy (ignored for π₀.₅)"""
+    """Enable planning for Cosmos Policy (ignored for pi0.5)"""
+
+    # Pi0.5 configuration
+    pi05_server_url: str = "ws://localhost:8001"
+    """WebSocket URL for remote pi0.5 inference server."""
+    pi05_num_steps: int = 500
+    """Max action steps per pi0.5 episode."""
+    pi05_fps: float = 30.0
+    """Action execution rate for pi0.5."""
+    pi05_slowdown: int = 1
+    """Interpolation factor to slow pi0.5 motion (2=half speed)."""
 
     color: str = "white"
     """Robot plays as 'white' or 'black'."""
@@ -167,14 +177,14 @@ class ChessOrchestrator:
             'wrist_roll.pos': 0.08,
             'gripper.pos': 1.63,
         }
-        # Park position: arm rotated to the right so it doesn't block overhead camera
+        # Park position: arm tucked left so it doesn't block overhead camera
         self._park_position = {
-            'shoulder_pan.pos': 90.0,
-            'shoulder_lift.pos': -98.12,
-            'elbow_flex.pos': 100.00,
-            'wrist_flex.pos': 62.88,
-            'wrist_roll.pos': 0.08,
-            'gripper.pos': 1.63,
+            'shoulder_pan.pos': -80.0,
+            'shoulder_lift.pos': -99.1,
+            'elbow_flex.pos': 95.2,
+            'wrist_flex.pos': 71.7,
+            'wrist_roll.pos': -78.0,
+            'gripper.pos': 3.1,
         }
 
         # Board calibration (pixel-to-world mapping, bootstrapped on first sense)
@@ -186,11 +196,10 @@ class ChessOrchestrator:
     def _init_policy(self):
         """Initialize the selected manipulation policy."""
         if self.config.policy_type == "pi05":
-            from ..policy.pi05_policy import PI05Policy
-            print(f"Initializing pi-0.5 policy...")
-            self.policy = PI05Policy(
-                checkpoint_path=self.config.policy_checkpoint
-            )
+            # Pi0.5 uses remote WebSocket server via _execute_pi05_hud();
+            # no local policy object needed.
+            self.policy = None
+            print(f"Pi0.5 policy: remote server at {self.config.pi05_server_url}")
         elif self.config.policy_type == "ppo":
             from ..policy.ppo_policy import PPOPolicy
             print("Initializing PPO policy...")
@@ -500,6 +509,10 @@ class ChessOrchestrator:
                 send_action_fn=self._send_joint_targets,
             )
 
+        # Pi0.5 with HUD overlay: chunked closed-loop execution
+        if self.config.policy_type == "pi05":
+            return self._execute_pi05_hud(intent)
+
         # Other policies: single-shot inference
         overhead, wrist = self.sense()
         robot_state = self._get_robot_state()
@@ -516,6 +529,199 @@ class ChessOrchestrator:
 
         success = self._execute_robot_action(action.actions)
         return success
+
+    def _execute_pi05_hud(self, intent: dict) -> bool:
+        """Execute a move using pi0.5 with HUD overlay via remote server.
+
+        Connects to the pi0.5 WebSocket server, runs sequential chunked
+        inference with HUD overlay applied to the egocentric camera feed,
+        and returns the robot to home position when done.
+
+        Args:
+            intent: Manipulation intent with pick_square and place_square.
+
+        Returns:
+            True if execution completed without errors.
+        """
+        import msgpack
+        import numpy as np
+        import torch
+
+        source = intent["pick_square"]
+        target = intent["place_square"]
+        task = "Pick up the highlighted piece and place it at the target"
+
+        logger.info("Pi0.5 + HUD execution: %s -> %s", source, target)
+
+        # msgpack helpers for numpy arrays
+        def _pack_array(obj):
+            if isinstance(obj, np.ndarray):
+                return {
+                    b"__ndarray__": True,
+                    b"data": obj.tobytes(),
+                    b"dtype": obj.dtype.str,
+                    b"shape": obj.shape,
+                }
+            if isinstance(obj, np.generic):
+                return {
+                    b"__npgeneric__": True,
+                    b"data": obj.item(),
+                    b"dtype": obj.dtype.str,
+                }
+            return obj
+
+        def _unpack_array(obj):
+            if b"__ndarray__" in obj:
+                return np.ndarray(
+                    buffer=obj[b"data"],
+                    dtype=np.dtype(obj[b"dtype"]),
+                    shape=obj[b"shape"],
+                )
+            if b"__npgeneric__" in obj:
+                return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+            return obj
+
+        try:
+            import websockets.sync.client
+
+            ws = websockets.sync.client.connect(
+                self.config.pi05_server_url,
+                compression=None, max_size=None,
+            )
+            packer = msgpack.Packer(default=_pack_array)
+
+            # Read server metadata
+            metadata = msgpack.unpackb(ws.recv(), object_hook=_unpack_array)
+            logger.info("Pi0.5 server: %s", metadata)
+
+            # Reset policy state
+            ws.send(packer.pack({"command": "reset"}))
+            msgpack.unpackb(ws.recv(), object_hook=_unpack_array)
+
+        except Exception as e:
+            logger.error("Failed to connect to pi0.5 server at %s: %s",
+                         self.config.pi05_server_url, e)
+            return False
+
+        from ..vision.hud_overlay import (
+            apply_hud, compute_homography, detect_corners,
+        )
+
+        hud_corners = None
+        hud_H = None
+        total_steps = 0
+        chunk_count = 0
+        step_delay = 1.0 / self.config.pi05_fps
+        max_steps = self.config.pi05_num_steps
+        slowdown = self.config.pi05_slowdown
+
+        try:
+            while total_steps < max_steps:
+                # Capture observation
+                if self.robot is None:
+                    logger.error("No robot connected")
+                    return False
+
+                obs_raw = self.robot.get_observation()
+                joints = np.array([
+                    float(obs_raw[n].item() if hasattr(obs_raw[n], "item") else obs_raw[n])
+                    for n in self._joint_names
+                ], dtype=np.float32)
+
+                # Extract images
+                ego_key = next((k for k in obs_raw if "egocentric" in k), None)
+                wrist_key = next((k for k in obs_raw if "wrist" in k and "pos" not in k), None)
+                if ego_key is None:
+                    logger.error("No egocentric image in observation")
+                    return False
+
+                overhead = np.array(obs_raw[ego_key], dtype=np.uint8)
+                if overhead.ndim == 3 and overhead.shape[0] == 3:
+                    overhead = np.transpose(overhead, (1, 2, 0))
+
+                if wrist_key and obs_raw[wrist_key] is not None:
+                    wrist = np.array(obs_raw[wrist_key], dtype=np.uint8)
+                    if wrist.ndim == 3 and wrist.shape[0] == 3:
+                        wrist = np.transpose(wrist, (1, 2, 0))
+                else:
+                    wrist = np.zeros_like(overhead)
+
+                # Detect board corners on first frame, cache for episode
+                if hud_corners is None:
+                    hud_corners = detect_corners(overhead)
+                    if hud_corners is not None:
+                        hud_H = compute_homography(hud_corners)
+                        logger.info("HUD: detected board corners")
+                    else:
+                        logger.warning("HUD: could not detect board corners")
+
+                # Apply HUD overlay
+                apply_hud(overhead, source, target, hud_corners, hud_H)
+
+                # Build observation for pi0.5 server
+                obs = {
+                    "observation.images.egocentric": overhead,
+                    "observation.images.wrist": wrist,
+                    "observation.state": joints,
+                    "task": task,
+                }
+
+                # Request action chunk from server
+                ws.send(packer.pack(obs))
+                response = ws.recv()
+                result = msgpack.unpackb(response, object_hook=_unpack_array)
+
+                chunk = np.array(
+                    result.get("action_chunk") or result.get("action"),
+                    dtype=np.float32,
+                )
+                if chunk.ndim == 1:
+                    chunk = chunk.reshape(1, -1)
+
+                # Interpolate for slowdown
+                if slowdown > 1:
+                    n, dim = chunk.shape
+                    indices = np.arange(n)
+                    new_indices = np.linspace(0, n - 1, (n - 1) * slowdown + 1)
+                    interp = np.zeros((len(new_indices), dim), dtype=chunk.dtype)
+                    for d in range(dim):
+                        interp[:, d] = np.interp(new_indices, indices, chunk[:, d])
+                    chunk = interp
+
+                chunk_count += 1
+                if chunk_count <= 2 or chunk_count % 10 == 0:
+                    print(f"  Pi0.5 chunk {chunk_count}: {chunk.shape[0]} actions, "
+                          f"total_steps={total_steps}/{max_steps}")
+
+                # Execute chunk
+                for i in range(len(chunk)):
+                    if total_steps >= max_steps:
+                        break
+                    action = chunk[i]
+                    action_dict = {}
+                    for j, name in enumerate(self._joint_names):
+                        if j < len(action):
+                            action_dict[name] = torch.tensor(
+                                [float(action[j])], dtype=torch.float32,
+                            )
+                    self.robot.send_action(action_dict)
+                    total_steps += 1
+                    time.sleep(step_delay)
+
+        except Exception as e:
+            logger.error("Pi0.5 execution failed: %s", e)
+            return False
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+        print(f"  Pi0.5 episode complete: {total_steps} steps, {chunk_count} chunks")
+
+        # Return to home position
+        self.home_robot()
+        return True
 
     def _get_robot_state(self):
         """Get current robot state (joint positions + gripper) from SO-101.

@@ -37,45 +37,44 @@ You need two machines:
 
 ### 1. Set up the GPU server
 
-Log in to your Brev instance running the Isaac Sim container:
+You need a GPU server with ~34GB VRAM for Cosmos-Reason2 and ~8GB for pi0.5 inference. We use [Brev](https://docs.nvidia.com/brev/latest/quick-start.html) with an L40S instance.
 
 ```bash
-brev shell isaacsim
-```
-
-Clone the repo and install dependencies:
-
-```bash
+ssh <your-brev-instance>
 git clone https://github.com/MaxSchmitz/cosmos-chessbot.git
 cd cosmos-chessbot
 pip install uv && uv sync
 ```
 
-Log in to Hugging Face (Cosmos-Reason2 is a gated model):
+Log in to Hugging Face (Cosmos-Reason2 and PaliGemma are gated models):
 
 ```bash
 uvx huggingface-cli login
 ```
 
-Open port 8000 so your local machine can reach the server. In the Brev dashboard, add port 8000 to the instance's open ports, or use SSH tunneling:
+Start both servers:
 
 ```bash
-# Option A: SSH tunnel from your local machine
-ssh -L 8000:localhost:8000 <your-brev-instance>
+# Cosmos-Reason2 reasoning server (port 8000)
+uv run python scripts/cosmos_server.py --host 0.0.0.0 --port 8000 &
 
-# Option B: Open port in Brev dashboard, then use the public URL
+# Pi0.5 VLA inference server (port 8001)
+uv run python scripts/serve_pi05.py \
+    --checkpoint outputs/pi05_hud/checkpoints/005000/pretrained_model/ \
+    --port 8001 &
 ```
 
-Start the Cosmos-Reason2 server:
+Set up SSH tunnels from your local machine:
 
 ```bash
-uv run python scripts/cosmos_server.py --host 0.0.0.0 --port 8000
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 <your-brev-instance>
 ```
 
-Verify it's running:
+Verify both servers:
 
 ```bash
 curl http://localhost:8000/health
+# Pi0.5 health check is implicit -- it sends metadata on WebSocket connect
 ```
 
 ### 2. Set up the local machine
@@ -92,34 +91,40 @@ uv sync
 
 ### 3. Run the system
 
-Single move (robot executes one move, then stops):
+Single move with pi0.5 + HUD (recommended):
 
 ```bash
 uv run cosmos-chessbot \
-  --cosmos-server http://<your-brev-server>:8000 \
-  --overhead-camera 0 --wrist-camera 1
+  --policy pi05 \
+  --cosmos-server http://localhost:8000 \
+  --pi05-server ws://localhost:8001 \
+  --overhead-camera 1 --wrist-camera 0
 ```
 
 Full game as white:
 
 ```bash
 uv run cosmos-chessbot \
-  --cosmos-server http://<your-brev-server>:8000 \
+  --policy pi05 \
+  --cosmos-server http://localhost:8000 \
+  --pi05-server ws://localhost:8001 \
   --game-mode full-game --color white
 ```
 
-Full game as black:
+Full game as black (limit to 20 moves):
 
 ```bash
 uv run cosmos-chessbot \
-  --cosmos-server http://<your-brev-server>:8000 \
+  --policy pi05 \
+  --cosmos-server http://localhost:8000 \
+  --pi05-server ws://localhost:8001 \
   --game-mode full-game --color black --moves 20
 ```
 
 ## System Architecture
 
 ```
- Local Machine (SO-101)                     Brev GPU Server (H100)
+ Local Machine (SO-101)                     Brev GPU Server (L40S)
  ──────────────────────                     ──────────────────────
  Cameras (egocentric + wrist)               Cosmos-Reason2 Reasoning
          │                                    ├── Turn detection (video)
@@ -132,8 +137,12 @@ uv run cosmos-chessbot \
          ▼                                      queries only)
  Cosmos-Reason2 (intent + constraints) ─────────────┘
          │
-         ▼
- PPO Policy (trained in Isaac Sim)
+         ▼                                   Pi0.5 Inference Server
+ HUD overlay (green=pick, magenta=place)      (WebSocket, port 8001)
+         │                                          ▲
+         ▼                                          │
+ Pi0.5 VLA Policy ──────────────────────────────────┘
+   (chunked closed-loop control)
          │
          ▼
  SO-101 Robot Arm (physical execution)
@@ -148,7 +157,8 @@ uv run cosmos-chessbot \
 ### Key Design Principles
 
 - **Cosmos-Reason2** never outputs motor commands -- it reasons about the physical world
-- **The PPO policy** never reasons about chess or rules -- it executes manipulation
+- **Pi0.5** never reasons about chess or rules -- it executes manipulation guided by HUD markers
+- **HUD overlay** decouples "what to move" from "how to move" -- a single visual policy handles any chess move
 - **YOLO-DINO** handles perception locally -- fast, reliable, no GPU server round-trip
 - **Cosmos-Reason2** handles reasoning remotely -- egocentric embodied AI on brev GPU
 - Each model is used exactly where it is strongest
@@ -271,16 +281,28 @@ Standard UCI chess engine for move selection:
 - Deterministic, well-understood symbolic planning
 - No perception and no embodiment -- by design
 
-### 3. PPO RL Policy (Isaac Sim)
+### 3. Pi0.5 VLA Policy (Fine-tuned)
 
-A PPO reinforcement learning policy trained in simulation for physical manipulation:
-- **Architecture**: ActorCritic with shared backbone (256 hidden dim)
-- **Observations** (21-dim): joint positions (5) + gripper (1) + end-effector pose (7) + piece-relative (3) + target-relative (3) + grasp flag (1) + phase (1)
-- **Actions** (6-dim): joint targets (5) + gripper command (1)
-- **Training**: Isaac Sim with rigid body physics, kinematic grasping, 32-piece typed piece pool
-- **Reward curriculum**: approach -> grasp -> lift -> transport -> success, with collision and action-rate penalty ramps
+A [pi0.5](https://www.physicalintelligence.company/blog/pi0-5) Vision-Language-Action model fine-tuned on real-robot chess demonstrations:
+- **Architecture**: PaliGemma-3B backbone with action head, outputting 50-step action chunks
+- **Training data**: ~50 episodes of pick-and-place demonstrations recorded with the SO-101
+- **Task encoding**: Visual HUD overlay on the egocentric camera -- green circle on the source piece, magenta circle on the target square
+- **Inference**: Remote WebSocket server on GPU, chunked execution at 30fps on the local robot
+- **Key insight**: One visual policy handles any chess move. The HUD overlay encodes "what to move where" visually, so the policy only needs to learn "pick highlighted, place at target."
 
-### 4. SO-101 Robotic Arm
+### 4. HUD Overlay System
+
+The HUD (Heads-Up Display) overlay bridges symbolic chess decisions and physical execution:
+
+1. The chess engine decides a move (e.g., e2 to e4)
+2. YOLO pose model detects the 4 board corners in the camera image
+3. A homography maps chess squares to pixel coordinates
+4. Green and magenta circles are drawn on the camera image at source and target
+5. The pi0.5 policy sees these markers and executes the pick-and-place
+
+This decouples move selection from motor control -- the same policy handles any move, captures (remove then place), and even castling (two sequential moves).
+
+### 5. SO-101 Robotic Arm
 
 - 5 arm joints + 1 gripper
 - Egocentric camera for global perception
@@ -296,7 +318,7 @@ Each move follows this loop:
 2. **Perceive** -- YOLO-DINO extracts board state (FEN)
 3. **Plan** -- Stockfish computes best move via UCI
 4. **Compile Intent** -- Cosmos-Reason2 reasons about physical constraints + plans 2D pixel trajectory (Action CoT)
-5. **Act** -- PPO policy executes the manipulation on SO-101
+5. **Act** -- Pi0.5 policy executes the manipulation on SO-101 (HUD overlay guides the pick-and-place)
 6. **Verify** -- Two-stage: Cosmos visual goal verification, then FEN comparison
 7. **Recover** -- If verification fails, Cosmos-Reason2 diagnoses the physical failure and plans correction
 
@@ -371,56 +393,72 @@ cosmos-chessbot/
 |------|---------|-------------|
 | `--game-mode` | `single-move` | `single-move` or `full-game` |
 | `--color` | `white` | Robot plays as `white` or `black` |
-| `--cosmos-server` | none | Brev server URL (e.g., `http://gpu:8000`) |
-| `--model` | `nvidia/Cosmos-Reason2-2B` | Cosmos model for local inference |
+| `--policy` | `cosmos` | Policy: `pi05`, `cosmos`, `ppo`, or `waypoint` |
+| `--cosmos-server` | none | Brev Cosmos server URL (e.g., `http://gpu:8000`) |
+| `--pi05-server` | `ws://localhost:8001` | Pi0.5 WebSocket server URL |
+| `--pi05-fps` | `30` | Pi0.5 action execution rate |
+| `--pi05-steps` | `500` | Max action steps per pi0.5 move |
 | `--overhead-camera` | `0` | Egocentric camera device ID |
 | `--wrist-camera` | `1` | Wrist camera device ID |
 | `--stockfish` | `stockfish` | Path to Stockfish binary |
-| `--policy` | `cosmos` | Policy: `cosmos` or `pi05` |
+| `--perception` | `yolo` | Perception: `yolo` or `cosmos` |
 | `--moves` | unlimited | Maximum moves to execute |
+| `--dry-run` | off | Skip robot connection (vision + planning only) |
 | `--verbose` / `--quiet` | normal | Logging verbosity |
 
-### RL Training (Isaac Sim)
+### Pi0.5 Inference Server
+
+Start the pi0.5 server on your GPU machine, pointing to the fine-tuned HUD checkpoint:
 
 ```bash
-# Inside Isaac Sim container
-OMNI_KIT_ACCEPT_EULA=yes /isaac-sim/python.sh scripts/train_chess_rl.py \
-    --num-envs 64 --num-steps 500000
+# On GPU server
+uv run python scripts/serve_pi05.py \
+    --checkpoint outputs/pi05_hud/checkpoints/005000/pretrained_model/ \
+    --port 8001
 ```
 
-### Sim-to-Real Deployment
+Then tunnel the port to your local machine:
 
 ```bash
-uv run python scripts/run_sim_policy_on_real_robot.py \
-    --checkpoint data/eval/policy_final.pt \
-    --robot-port /dev/ttyUSB0 \
-    --task "e2 e4" --continuous
+ssh -L 8001:localhost:8001 <your-brev-instance>
+```
+
+### Pi0.5 Standalone Episode
+
+Run pi0.5 directly (outside the orchestrator) for testing:
+
+```bash
+uv run python scripts/hardware/run_pi05_episode.py \
+    --source e2 --target e4 \
+    --server-url ws://localhost:8001
 ```
 
 ## Current Status
 
 - [x] Stockfish UCI integration
-- [x] YOLO-DINO board perception (local, real-time)
+- [x] YOLO-DINO board perception (local, real-time, mAP50=0.984)
 - [x] Cosmos-Reason2 embodied reasoning (6 modes: turn/move/action/trajectory/verification/correction)
 - [x] Remote reasoning server with full endpoint coverage
-- [x] PPO RL training in Isaac Sim (reward curriculum, typed piece pool)
-- [x] Sim-to-real policy deployment
+- [x] Pi0.5 VLA fine-tuning on real-robot demonstrations
+- [x] HUD overlay system for visual move encoding
+- [x] Pi0.5 chunked closed-loop execution via WebSocket server
+- [x] Full orchestrator: sense -> perceive -> plan -> compile -> act -> verify -> recover
 - [x] Full game loop with turn detection and opponent move detection
 - [x] FEN verification and automated recovery
-- [ ] Full closed-loop autonomous play on physical robot
+- [x] MCP server with 22 tools for interactive control
 
 ## License
 
 - **Cosmos-Reason2**: NVIDIA Open Model License (Apache 2.0 compatible)
-- **Isaac Sim / IsaacLab**: NVIDIA EULA (used for RL training)
+- **Pi0.5 / PaliGemma**: Respective model licenses (used for VLA fine-tuning)
 - **Stockfish**: GPLv3 (used as an external engine)
 
 ## Acknowledgements
 
 - [NVIDIA Cosmos](https://github.com/NVIDIA/Cosmos) team for Physical AI models and tooling
-- [NVIDIA Isaac Sim / IsaacLab](https://github.com/isaac-sim/IsaacLab) for the simulation and RL training framework
+- [Physical Intelligence](https://www.physicalintelligence.company/) for the pi0.5 VLA architecture
+- [Hugging Face LeRobot](https://github.com/huggingface/lerobot) for the robot learning framework and pi0.5 integration
 - [The Robot Studio / Hugging Face](https://github.com/TheRobotStudio/SO-ARM100) for the SO-100/SO-101 robot arm
-- [LightwheelAI](https://github.com/LightwheelAI) for LeIsaac, which our Isaac Sim training environment builds on
 - [ChessReD2k](https://arxiv.org/abs/2310.04086) (Masouris et al., VISAPP 2024) for the chess recognition dataset used to train our YOLO piece detection and board corner models
 - [Stockfish](https://stockfishchess.org/) developers for the UCI chess engine
 - [Claude Code](https://claude.ai/claude-code) (Anthropic) for assistance writing the codebase

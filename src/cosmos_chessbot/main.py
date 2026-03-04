@@ -118,6 +118,32 @@ def main():
         help="Path to static calibrated corners JSON (skips corner detection)",
     )
 
+    # Pi0.5
+    parser.add_argument(
+        "--pi05-server",
+        type=str,
+        default="ws://localhost:8001",
+        help="Pi0.5 WebSocket server URL (default: ws://localhost:8001)",
+    )
+    parser.add_argument(
+        "--pi05-fps",
+        type=float,
+        default=30.0,
+        help="Pi0.5 action execution rate (default: 30)",
+    )
+    parser.add_argument(
+        "--pi05-steps",
+        type=int,
+        default=500,
+        help="Max pi0.5 action steps per move (default: 500)",
+    )
+    parser.add_argument(
+        "--pi05-slowdown",
+        type=int,
+        default=1,
+        help="Pi0.5 interpolation slowdown factor (default: 1)",
+    )
+
     # Robot
     parser.add_argument(
         "--robot-port",
@@ -180,6 +206,11 @@ def main():
         policy_checkpoint=args.policy_checkpoint,
         enable_planning=args.enable_planning,
         color=args.color,
+        # Pi0.5
+        pi05_server_url=args.pi05_server,
+        pi05_num_steps=args.pi05_steps,
+        pi05_fps=args.pi05_fps,
+        pi05_slowdown=args.pi05_slowdown,
         # Perception
         perception_backend=args.perception,
         yolo_piece_weights=args.yolo_piece_weights,
@@ -213,6 +244,9 @@ def main():
         print(f"  Policy checkpoint: {args.policy_checkpoint}")
     if args.policy == "cosmos":
         print(f"  Planning: {'enabled' if args.enable_planning else 'disabled'}")
+    if args.policy == "pi05":
+        print(f"  Pi0.5 server: {args.pi05_server}")
+        print(f"  Pi0.5 fps: {args.pi05_fps}, steps: {args.pi05_steps}")
     print()
 
     with ChessOrchestrator(config) as orchestrator:

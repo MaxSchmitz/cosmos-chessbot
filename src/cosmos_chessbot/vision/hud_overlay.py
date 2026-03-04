@@ -53,12 +53,18 @@ def compute_homography(corners: np.ndarray) -> np.ndarray:
 def detect_corners(
     image: np.ndarray,
     corner_weights: str | Path = _DEFAULT_CORNER_WEIGHTS,
+    conf: float = 0.25,
 ) -> np.ndarray | None:
     """Detect board corners from an image using the YOLO pose model.
+
+    If multiple detections are returned, selects the one whose keypoints
+    span the largest area (most likely to be the actual board rather than
+    a spurious small pattern).
 
     Args:
         image: HWC uint8 image (RGB or BGR).
         corner_weights: Path to YOLO pose model weights.
+        conf: Minimum detection confidence threshold.
 
     Returns:
         (4, 2) float32 array in [TL, TR, BR, BL] order, or None if not detected.
@@ -66,14 +72,44 @@ def detect_corners(
     from ultralytics import YOLO
 
     model = YOLO(corner_weights)
-    results = model.predict(image, verbose=False)
-    if len(results) == 0 or results[0].keypoints is None:
-        return None
-    kpts = results[0].keypoints
-    if len(kpts.xy) == 0:
-        return None
-    corners = kpts.xy[0].cpu().numpy()
-    return corners.astype(np.float32)
+
+    def _detect(img):
+        results = model.predict(img, verbose=False, conf=conf)
+        if len(results) == 0 or results[0].keypoints is None:
+            return None
+        kpts = results[0].keypoints
+        if len(kpts.xy) == 0:
+            return None
+        # Pick detection with largest keypoint bounding-box area
+        best_corners = None
+        best_area = 0.0
+        confs = results[0].boxes.conf if results[0].boxes is not None else []
+        for i in range(len(kpts.xy)):
+            pts = kpts.xy[i].cpu().numpy().astype(np.float32)
+            c = float(confs[i]) if i < len(confs) else 0.0
+            x_range = pts[:, 0].max() - pts[:, 0].min()
+            y_range = pts[:, 1].max() - pts[:, 1].min()
+            area = x_range * y_range
+            if area > best_area:
+                best_area = area
+                best_corners = pts
+        return best_corners
+
+    # Try on raw image first
+    corners = _detect(image)
+    if corners is not None:
+        return corners
+
+    # Retry with contrast enhancement (handles low-light conditions)
+    inv_gamma = 1.0 / 0.5
+    table = np.array(
+        [((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8
+    )
+    enhanced = cv2.LUT(image, table)
+    corners = _detect(enhanced)
+    if corners is not None:
+        print("detect_corners: detected after contrast enhancement")
+    return corners
 
 
 def resolve_location(
