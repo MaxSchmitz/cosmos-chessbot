@@ -75,22 +75,18 @@ def main():
     src_ds = LeRobotDataset(args.src_repo_id, root=src_root)
     print(f"  Episodes: {src_ds.num_episodes}, Frames: {src_ds.num_frames}, FPS: {src_ds.fps}")
 
-    # Build destination features: copy from source, converting video -> image
+    # Build destination features: copy from source, preserving video format
     dst_features = {}
     for key, feat in src_ds.features.items():
         if key in DEFAULT_FEATURES:
             continue
-        feat = dict(feat)  # copy
-        if feat["dtype"] == "video":
-            feat["dtype"] = "image"
-            feat.pop("info", None)  # strip video-specific metadata
-        dst_features[key] = feat
+        dst_features[key] = dict(feat)
 
     # Check destination doesn't already exist
     if dst_root.exists():
         raise FileExistsError(f"Destination already exists: {dst_root}")
 
-    # Create destination dataset
+    # Create destination dataset (use_videos=True to keep compressed format)
     print(f"Creating destination dataset: {args.dst_repo_id}")
     dst_ds = LeRobotDataset.create(
         repo_id=args.dst_repo_id,
@@ -98,7 +94,7 @@ def main():
         root=dst_root,
         features=dst_features,
         robot_type=src_ds.meta.info.get("robot_type"),
-        use_videos=False,
+        use_videos=True,
         image_writer_threads=4,
     )
 
