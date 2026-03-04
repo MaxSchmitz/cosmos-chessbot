@@ -122,6 +122,8 @@ class YOLODINOFenDetector:
         """
         self.device = device
         self.conf_threshold = conf_threshold
+        self.dino_conf_threshold = 0.95  # Only use DINO classification if its confidence > this
+        self.yolo_dino_threshold = 0.50  # Only run DINO on YOLO detections below this confidence
         self.use_dino = use_dino and mlp_weights is not None
 
         # Load YOLO piece detection model
@@ -342,8 +344,8 @@ class YOLODINOFenDetector:
                     print(f"Detection {i} out of board bounds")
                 continue
 
-            # Step 2: Re-classify with DINO-MLP (if enabled)
-            if self.use_dino:
+            # Step 2: Re-classify with DINO-MLP (if enabled and YOLO is uncertain)
+            if self.use_dino and yolo_conf < self.yolo_dino_threshold:
                 # Crop piece
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                 x1 = max(0, x1)
@@ -365,14 +367,19 @@ class YOLODINOFenDetector:
                     dino_class = int(torch.argmax(logits, dim=1)[0])
                     dino_conf = float(torch.softmax(logits, dim=1)[0, dino_class])
 
-                # Use DINO classification
-                final_class = dino_class
-                final_conf = dino_conf
+                # Use DINO only if confident enough, otherwise keep YOLO
+                if dino_conf >= self.dino_conf_threshold:
+                    final_class = dino_class
+                    final_conf = dino_conf
+                else:
+                    final_class = yolo_class
+                    final_conf = yolo_conf
 
                 if verbose:
+                    used = "DINO" if dino_conf >= self.dino_conf_threshold else "YOLO"
                     print(f"Detection {i}: YOLO={CLASS_NAMES[yolo_class]}({yolo_conf:.2f}), "
                           f"DINO={CLASS_NAMES[dino_class]}({dino_conf:.2f}), "
-                          f"Square={chess.square_name(square)}")
+                          f"used={used}, Square={chess.square_name(square)}")
             else:
                 # Use YOLO classification
                 final_class = yolo_class
@@ -556,8 +563,8 @@ class YOLODINOFenDetector:
             if square is None:
                 continue
 
-            # Re-classify with DINO if enabled
-            if self.use_dino:
+            # Re-classify with DINO if enabled and YOLO is uncertain
+            if self.use_dino and yolo_conf < self.yolo_dino_threshold:
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(img_width, x2), min(img_height, y2)
@@ -574,8 +581,13 @@ class YOLODINOFenDetector:
                     dino_class = int(torch.argmax(logits, dim=1)[0])
                     dino_conf = float(torch.softmax(logits, dim=1)[0, dino_class])
 
-                final_class = dino_class
-                final_conf = dino_conf
+                # Use DINO only if confident enough, otherwise keep YOLO
+                if dino_conf >= self.dino_conf_threshold:
+                    final_class = dino_class
+                    final_conf = dino_conf
+                else:
+                    final_class = yolo_class
+                    final_conf = yolo_conf
             else:
                 final_class = yolo_class
                 final_conf = yolo_conf

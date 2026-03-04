@@ -87,11 +87,11 @@ def load_model(checkpoint_path: str, device: str = "cuda", rtc: bool = False):
         policy.config.rtc_config = RTCConfig(
             enabled=True,
             execution_horizon=10,
-            max_guidance_weight=1.0,
+            max_guidance_weight=10.0,
             prefix_attention_schedule=RTCAttentionSchedule.EXP,
         )
         policy.init_rtc_processor()
-        logger.info("RTC enabled: execution_horizon=10, max_guidance_weight=1.0, schedule=EXP")
+        logger.info("RTC enabled: execution_horizon=10, max_guidance_weight=10.0, schedule=EXP")
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy,
