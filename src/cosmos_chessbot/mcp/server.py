@@ -61,10 +61,10 @@ async def lifespan(app: FastMCP):
     robot_port = os.environ.get("CHESS_ROBOT_PORT", "/dev/tty.usbmodem58FA0962531")
     dry_run = os.environ.get("CHESS_DRY_RUN", "false").lower() == "true"
     yolo_pieces = os.environ.get(
-        "CHESS_YOLO_PIECES", "runs/detect/yolo26_chess_combined/weights/best.pt",
+        "CHESS_YOLO_PIECES", "models/yolo_pieces.pt",
     )
     yolo_corners = os.environ.get(
-        "CHESS_YOLO_CORNERS", "runs/pose/board_corners/weights/best.pt",
+        "CHESS_YOLO_CORNERS", "models/yolo_corners.pt",
     )
     mlp_weights = os.environ.get("CHESS_MLP_WEIGHTS")
     static_corners = os.environ.get("CHESS_STATIC_CORNERS")

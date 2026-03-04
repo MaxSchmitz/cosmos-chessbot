@@ -133,8 +133,8 @@ class ChessOrchestrator:
         if config.perception_backend == "yolo":
             logger.info("Using YOLO26-DINO-MLP perception backend")
             self._yolo_detector = YOLODINOFenDetector(
-                yolo_weights=config.yolo_piece_weights or "runs/detect/yolo26_chess_combined/weights/best.pt",
-                corner_weights=config.yolo_corner_weights or "runs/pose/board_corners/weights/best.pt",
+                yolo_weights=config.yolo_piece_weights or "models/yolo_pieces.pt",
+                corner_weights=config.yolo_corner_weights or "models/yolo_corners.pt",
                 mlp_weights=config.yolo_mlp_weights,
                 static_corners=config.static_corners,
             )

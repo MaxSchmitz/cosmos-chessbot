@@ -24,10 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 from cosmos_chessbot.vision.yolo_dino_detector import YOLODINOFenDetector, CLASS_NAMES
 
 # ---------------------------------------------------------------------------
-# Paths (ultralytics nested project/name, so the path is doubled)
 # ---------------------------------------------------------------------------
-PIECE_WEIGHTS = 'runs/detect/runs/detect/yolo26_chess_combined/weights/best.pt'
-CORNER_WEIGHTS = 'runs/pose/runs/pose/board_corners/weights/best.pt'
+PIECE_WEIGHTS = 'models/yolo_pieces.pt'
+CORNER_WEIGHTS = 'models/yolo_corners.pt'
 
 
 def draw_annotations(image: np.ndarray, corners, detections, fen: str) -> np.ndarray:
@@ -108,14 +107,16 @@ def main():
     print(f"Conf threshold: {args.conf}")
     print("=" * 60)
 
-    # Load detector (use_dino=False -- DINO-MLP not trained yet)
+    mlp_path = Path('models/dino_mlp/dino_mlp_best.pth')
+    use_dino = mlp_path.exists()
+
     detector = YOLODINOFenDetector(
         yolo_weights=args.piece_weights,
         corner_weights=None if use_static_corners else args.corner_weights,
-        mlp_weights=None,
+        mlp_weights=str(mlp_path) if use_dino else None,
         device='cpu',
         conf_threshold=args.conf,
-        use_dino=False,
+        use_dino=use_dino,
         static_corners=str(args.corners) if use_static_corners else None,
     )
 

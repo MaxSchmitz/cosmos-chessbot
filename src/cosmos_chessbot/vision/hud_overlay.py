@@ -23,7 +23,7 @@ _OUTLINE_COLOR = (255, 255, 255)
 _MARKER_RADIUS = 14
 _OUTLINE_RADIUS = 17
 
-_DEFAULT_CORNER_WEIGHTS = "runs/pose/board_corners/weights/best.pt"
+_DEFAULT_CORNER_WEIGHTS = "models/yolo_corners.pt"
 
 _SQUARE_RE = re.compile(r"^[a-h][1-8]$")
 _PIXEL_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)$")

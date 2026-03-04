@@ -355,7 +355,7 @@ def main():
     parser.add_argument(
         '--yolo-weights',
         type=Path,
-        default=Path('runs/detect/yolo26_chess/weights/best.pt'),
+        default=Path('models/yolo_pieces.pt'),
         help='Path to trained YOLO weights'
     )
     parser.add_argument(

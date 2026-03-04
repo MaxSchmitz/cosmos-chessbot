@@ -19,7 +19,7 @@ Usage:
     from cosmos_chessbot.vision.yolo_dino_detector import YOLODINOFenDetector
 
     detector = YOLODINOFenDetector(
-        yolo_weights='runs/detect/yolo26_chess/weights/best.pt',
+        yolo_weights='models/yolo_pieces.pt',
         mlp_weights='models/dino_mlp/dino_mlp_best.pth'
     )
 

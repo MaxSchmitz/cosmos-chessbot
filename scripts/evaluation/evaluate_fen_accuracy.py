@@ -439,13 +439,13 @@ def main():
     parser.add_argument(
         '--piece-weights',
         type=Path,
-        default=Path('runs/detect/runs/detect/yolo26_chess/weights/best.pt'),
+        default=Path('models/yolo_pieces.pt'),
         help='Path to piece detection weights'
     )
     parser.add_argument(
         '--corner-weights',
         type=Path,
-        default=Path('runs/pose/runs/pose/board_corners/weights/best.pt'),
+        default=Path('models/yolo_corners.pt'),
         help='Path to corner detection weights'
     )
     parser.add_argument(

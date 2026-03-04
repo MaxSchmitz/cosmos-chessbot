@@ -6,13 +6,11 @@ Supports Real-Time Chunking (RTC) for smooth async inference.
 Usage:
     # On brev GPU server (with RTC):
     uv run python scripts/serve_pi05.py \
-        --checkpoint outputs/pi05_bowl/checkpoints/005000/pretrained_model \
-        --port 8001 --rtc
+        --checkpoint models/pi05_chess_hud --port 8001 --rtc
 
     # Without RTC:
     uv run python scripts/serve_pi05.py \
-        --checkpoint outputs/pi05_bowl/checkpoints/005000/pretrained_model \
-        --port 8001
+        --checkpoint models/pi05_chess_hud --port 8001
 
     # SSH tunnel from local Mac:
     ssh -f -N -L 8001:localhost:8001 ubuntu@isaacsim

@@ -24,8 +24,8 @@ from cosmos_chessbot.vision.yolo_dino_detector import (
     YOLODINOFenDetector, CLASS_NAMES, CLASS_TO_PIECE,
 )
 
-PIECE_WEIGHTS = "runs/detect/runs/detect/yolo26_chess/weights/best.pt"
-CORNER_WEIGHTS = "runs/pose/runs/pose/board_corners/weights/best.pt"
+PIECE_WEIGHTS = "models/yolo_pieces.pt"
+CORNER_WEIGHTS = "models/yolo_corners.pt"
 
 
 def draw_annotations(image, corners, raw_detections, mapped_pieces, fen):
@@ -144,13 +144,16 @@ def main():
 
     use_static_corners = args.corners is not None and args.corners.exists()
 
+    mlp_path = Path("models/dino_mlp/dino_mlp_best.pth")
+    use_dino = mlp_path.exists()
+
     detector = YOLODINOFenDetector(
         yolo_weights=args.piece_weights,
         corner_weights=None if use_static_corners else args.corner_weights,
-        mlp_weights=None,
+        mlp_weights=str(mlp_path) if use_dino else None,
         device=args.device,
         conf_threshold=args.conf,
-        use_dino=False,
+        use_dino=use_dino,
         static_corners=str(args.corners) if use_static_corners else None,
     )
 

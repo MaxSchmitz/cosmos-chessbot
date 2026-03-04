@@ -10,16 +10,11 @@ from .hud_overlay import (
     load_corners,
     resolve_location,
 )
-from .perception import CosmosPerception, BoardState
-from .remote_perception import RemoteCosmosPerception
 from .yolo_dino_detector import YOLODINOFenDetector
 
 __all__ = [
     "Camera",
     "CameraConfig",
-    "CosmosPerception",
-    "BoardState",
-    "RemoteCosmosPerception",
     "YOLODINOFenDetector",
     "apply_hud",
     "compute_drop_zone",

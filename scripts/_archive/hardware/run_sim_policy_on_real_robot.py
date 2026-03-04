@@ -384,10 +384,10 @@ def main():
     parser.add_argument("--save-video", type=Path, default=None,
                         help="Save camera feed to video file")
     parser.add_argument("--yolo-weights", type=Path,
-                        default=Path("runs/detect/runs/detect/yolo26_chess_combined/weights/best.pt"),
+                        default=Path("models/yolo_pieces.pt"),
                         help="Path to YOLO piece detection weights")
     parser.add_argument("--corner-weights", type=Path,
-                        default=Path("runs/pose/runs/pose/board_corners/weights/best.pt"),
+                        default=Path("models/yolo_corners.pt"),
                         help="Path to YOLO corner detection weights")
     parser.add_argument("--board-size", type=float, default=0.4,
                         help="Physical board size in meters (default: 40cm)")
