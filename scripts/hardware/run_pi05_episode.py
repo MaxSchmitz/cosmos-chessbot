@@ -337,6 +337,7 @@ def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
 
     # Non-RTC: trigger only when queue empty (like reference), unless overridden
     effective_threshold = 0 if no_rtc and queue_threshold == 30 else queue_threshold
+    execution_horizon = 10  # must match serve_pi05.py --execution-horizon
 
     try:
         while not shutdown_event.is_set():
@@ -349,6 +350,14 @@ def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
                 # conservative estimate without cold-start inflation)
                 latency_est = latency_tracker.p95()
                 inference_delay = math.ceil(latency_est / time_per_action) if latency_est > 0 else 0
+
+                # Validate threshold (reference: must be > execution_horizon + delay)
+                if not no_rtc and chunk_count > 0:
+                    min_threshold = execution_horizon + inference_delay
+                    if effective_threshold < min_threshold:
+                        print(f"  WARNING: queue_threshold ({effective_threshold}) < "
+                              f"execution_horizon + delay ({min_threshold}). "
+                              f"New chunks may not arrive before queue drains.")
 
                 # Capture observation (thread-safe via RobotWrapper lock)
                 joints, overhead, wrist = capture_observation(robot_wrapper, log_first=first_obs)
