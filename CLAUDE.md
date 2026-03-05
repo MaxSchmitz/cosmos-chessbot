@@ -56,7 +56,7 @@ You may be running in an autonomous loop via `loom.sh`. Each session is one iter
 
 ## Hardware
 
-- **Robot**: SO-101 5-DOF arm + gripper, connected via lerobot. Joint names: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper.
+- **Robot**: SO-101 6-DOF arm (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper), connected via lerobot.
 - **Cameras**: Overhead (index 1) and wrist (index 0). Park robot before overhead captures.
 - **GPU server**: `ssh ubuntu@isaacsim` (NVIDIA L40S, 46GB). Has cosmos-chessbot repo, PyTorch+CUDA, lerobot, transformers.
 - **MCP tools**: 19 tools configured in `.mcp.json`. Camera, perception, chess engine, reasoning, robot control, utilities.

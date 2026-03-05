@@ -45,23 +45,13 @@ def main():
     cam.connect()
     print(f"Camera {args.cam} connected ({args.width}x{args.height} @ {args.fps}fps)")
 
-    # Detect corners once from first frame
-    frame = cam.async_read()
-    if isinstance(frame, dict):
-        frame = frame["frame"]
-    frame = np.array(frame, dtype=np.uint8)
-    if frame.ndim == 3 and frame.shape[0] == 3:
-        frame = np.transpose(frame, (1, 2, 0))
-
-    # detect_corners uses YOLO which handles RGB/BGR internally
-    corners = detect_corners(frame)
-    if corners is None:
-        print("ERROR: could not detect board corners")
-        cam.disconnect()
-        return
-    homography = compute_homography(corners)
-    print(f"Board corners detected. Showing HUD: {args.source} -> {args.target}")
+    print(f"Showing HUD: {args.source} -> {args.target}")
     print("Press 'q' to quit.")
+
+    # Sticky corners: keep last good detection, only update on high-confidence detections
+    last_corners = None
+    last_homography = None
+    min_update_conf = 0.98
 
     while True:
         frame = cam.async_read()
@@ -71,8 +61,13 @@ def main():
         if frame.ndim == 3 and frame.shape[0] == 3:
             frame = np.transpose(frame, (1, 2, 0))
 
-        # This is exactly what run_pi05_episode.py does before sending to server
-        apply_hud(frame, args.source, args.target, corners=corners, homography=homography)
+        corners, detection_conf = detect_corners(frame, return_conf=True)
+        if corners is not None and detection_conf >= min_update_conf:
+            last_corners = corners
+            last_homography = compute_homography(corners)
+
+        if last_corners is not None:
+            apply_hud(frame, args.source, args.target, corners=last_corners, homography=last_homography)
 
         # frame is RGB (lerobot default), convert to BGR for cv2.imshow display
         cv2.imshow("HUD Feed (what policy sees)", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
