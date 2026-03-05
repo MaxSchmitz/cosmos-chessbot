@@ -233,19 +233,21 @@ Output: { "physical_cause": "Piece slipped during placement",
 
 ### 5. Trajectory Planning -- Action CoT (Image -> Pixel Waypoints)
 
-Plans a 2D end-effector trajectory in normalized pixel coordinates (0-1000), following the Cosmos-Reason2 Action CoT format. The chess board is a known flat plane, so pixel waypoints convert to 3D board-plane coordinates via homography.
+Plans a 2D end-effector trajectory in pixel coordinates, following the Cosmos-Reason2 Action CoT format. The chess board is a known flat plane, so pixel waypoints convert to 3D board-plane coordinates via homography.
 
 ```
 Input:  Current egocentric camera image + move (e.g., "e2e4")
 Prompt: "I need to execute chess move e2e4. Specify the 2D trajectory
-         my gripper should follow in normalized pixel coordinates (0-1000)..."
+         my gripper should follow as pixel coordinates in the image..."
 
 Output: { "waypoints": [
-            {"point_2d": [553, 728], "label": "above e2"},
-            {"point_2d": [553, 768], "label": "grasp e2"},
-            {"point_2d": [553, 474], "label": "lift"},
-            {"point_2d": [553, 474], "label": "above e4"},
-            {"point_2d": [553, 554], "label": "place e4"}
+            {"point_2d": [420, 380], "label": "above e2"},
+            {"point_2d": [420, 410], "label": "descend to e2"},
+            {"point_2d": [420, 410], "label": "grasp e2"},
+            {"point_2d": [420, 350], "label": "lift clear"},
+            {"point_2d": [420, 260], "label": "above e4"},
+            {"point_2d": [420, 290], "label": "place e4"},
+            {"point_2d": [420, 290], "label": "release"}
           ],
           "reasoning": "Vertical lift, horizontal traverse at safe height...",
           "confidence": 0.88 }
@@ -270,10 +272,11 @@ Output: { "success": true,
 
 ### 1. YOLO-DINO (Local Perception)
 
-Board segmentation (Ultimate V2) + piece detection (YOLO) running locally:
-- Image -> board crop -> piece bounding boxes -> FEN
-- Fast inference, no GPU server round-trip needed
-- Reliable bounding box detection for chess pieces
+Two-stage piece detection running locally (no GPU server needed):
+- **YOLO26** detects piece bounding boxes (mAP50=0.986) and board corners (mAP50=0.995)
+- **DINO vits8 + MLP** classifies piece types from cropped detections (91% accuracy)
+- Selective DINO: only invoked on low-confidence YOLO detections, cutting inference from 5s to 1.5s
+- Board corners detected via YOLO pose model, mapped to chess coordinates via homography
 
 ### 2. Stockfish (Symbolic Chess Engine)
 
@@ -356,7 +359,6 @@ cosmos-chessbot/
 │   ├── reasoning/                # Cosmos-Reason2 reasoning
 │   ├── stockfish/                # UCI engine wrapper
 │   ├── policy/                   # Manipulation policies
-│   ├── isaac/                    # Isaac Sim RL environment
 │   └── schemas/                  # Pydantic I/O models
 ├── scripts/
 │   ├── cosmos_server.py          # Cosmos-Reason2 GPU server
@@ -386,6 +388,8 @@ cosmos-chessbot/
 | `/reason/analyze_game` | POST | Turn detection from video frames |
 | `/reason/detect_move` | POST | Opponent move detection from video |
 | `/reason/correction` | POST | Post-failure correction planning |
+| `/reason/critique_episode` | POST | Full episode video critique (RL critic) |
+| `/reason/analyze_board` | POST | Board scene analysis (position, phase, condition) |
 
 ### CLI Reference
 
@@ -393,7 +397,7 @@ cosmos-chessbot/
 |------|---------|-------------|
 | `--game-mode` | `single-move` | `single-move` or `full-game` |
 | `--color` | `white` | Robot plays as `white` or `black` |
-| `--policy` | `cosmos` | Policy: `pi05`, `cosmos`, `ppo`, or `waypoint` |
+| `--policy` | `pi05` | Policy: `pi05` (VLA with HUD overlay) |
 | `--cosmos-server` | none | Brev Cosmos server URL (e.g., `http://gpu:8000`) |
 | `--pi05-server` | `ws://localhost:8001` | Pi0.5 WebSocket server URL |
 | `--pi05-fps` | `30` | Pi0.5 action execution rate |
@@ -401,7 +405,7 @@ cosmos-chessbot/
 | `--overhead-camera` | `0` | Egocentric camera device ID |
 | `--wrist-camera` | `1` | Wrist camera device ID |
 | `--stockfish` | `stockfish` | Path to Stockfish binary |
-| `--perception` | `yolo` | Perception: `yolo` or `cosmos` |
+| `--perception` | `yolo` | Perception: `yolo` (YOLO-DINO FEN detection) |
 | `--moves` | unlimited | Maximum moves to execute |
 | `--dry-run` | off | Skip robot connection (vision + planning only) |
 | `--verbose` / `--quiet` | normal | Logging verbosity |
@@ -433,11 +437,80 @@ uv run python scripts/hardware/run_pi05_episode.py \
     --server-url ws://localhost:8001
 ```
 
+## Evaluation
+
+### Perception Accuracy
+
+Evaluated on [ChessReD2k](https://arxiv.org/abs/2310.04086) test set (209 images):
+
+| Metric | Score |
+|--------|-------|
+| Per-square accuracy | 99.67% |
+| Exact FEN match | 83.7% |
+| YOLO piece detection mAP50 | 0.986 |
+| YOLO corner detection mAP50 | 0.995 |
+| DINO-MLP piece classification | 91.0% val accuracy |
+
+```bash
+# Run FEN evaluation on ChessReD2k
+uv run python scripts/evaluation/evaluate_fen_accuracy.py \
+    --dataset data/chessred2k_pose/ \
+    --yolo-pieces models/yolo_pieces.pt \
+    --yolo-corners models/yolo_corners.pt \
+    --dino-mlp models/dino_mlp/dino_mlp_best.pth
+```
+
+### Cosmos Reasoning
+
+Cosmos-Reason2 reasoning quality is evaluated qualitatively through the demo -- chain-of-thought outputs are shown alongside camera footage. Each endpoint produces structured JSON with a confidence score.
+
+## Reproducing from Scratch
+
+### 1. Train perception models
+
+```bash
+# YOLO piece detection
+uv run python scripts/training/train_yolo26_pieces.py \
+    --data data/combined_pieces/data.yaml --epochs 100
+
+# YOLO corner pose detection
+uv run python scripts/training/train_yolo26_corners.py \
+    --data data/combined_corners/data.yaml --epochs 100
+
+# DINO-MLP piece classifier
+uv run python scripts/training/train_dino_mlp_classifier.py \
+    --data-dir data/combined_pieces/
+```
+
+### 2. Collect robot demonstrations
+
+Record ~50 pick-and-place episodes with teleoperation:
+
+```bash
+uv run python scripts/hardware/collect_episodes.py \
+    --repo-id <your-hf-repo> --fps 30
+```
+
+### 3. Apply HUD overlays to training data
+
+```bash
+uv run python scripts/data/apply_hud_to_dataset.py \
+    --src-repo-id <raw-dataset> --dst-repo-id <hud-dataset>
+```
+
+### 4. Fine-tune Pi0.5
+
+```bash
+# On GPU server
+uv run python scripts/training/train_pi05.py \
+    --dataset <hud-dataset> --steps 12000
+```
+
 ## Current Status
 
 - [x] Stockfish UCI integration
 - [x] YOLO-DINO board perception (local, real-time, mAP50=0.984)
-- [x] Cosmos-Reason2 embodied reasoning (6 modes: turn/move/action/trajectory/verification/correction)
+- [x] Cosmos-Reason2 embodied reasoning (9 endpoints: turn detection, move detection, action reasoning, trajectory planning, goal verification, correction planning, episode critique, board analysis, perception)
 - [x] Remote reasoning server with full endpoint coverage
 - [x] Pi0.5 VLA fine-tuning on real-robot demonstrations
 - [x] HUD overlay system for visual move encoding
@@ -445,7 +518,7 @@ uv run python scripts/hardware/run_pi05_episode.py \
 - [x] Full orchestrator: sense -> perceive -> plan -> compile -> act -> verify -> recover
 - [x] Full game loop with turn detection and opponent move detection
 - [x] FEN verification and automated recovery
-- [x] MCP server with 22 tools for interactive control
+- [x] MCP server with 20 tools for interactive control
 
 ## License
 

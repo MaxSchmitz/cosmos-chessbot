@@ -115,6 +115,10 @@ class ActionQueue:
 
     Maintains both original (pre-postprocessing) actions for RTC guidance
     and processed actions for robot execution.
+
+    Two merge modes (caller decides which to use):
+    - replace(): RTC mode -- skip inference_delay actions, replace queue
+    - append(): Non-RTC mode -- trim consumed, concatenate new chunk
     """
 
     def __init__(self):
@@ -159,27 +163,31 @@ class ActionQueue:
 
     def replace(self, original_actions, processed_actions, inference_delay,
                 action_index_before_inference=None):
-        """Replace queue with new chunk, skipping actions consumed during inference."""
+        """Replace queue with new chunk, skipping actions consumed during inference (RTC mode)."""
         with self.lock:
-            # Validate queue consistency if we have a reference index
-            if action_index_before_inference is not None and self.queue is not None:
-                consumed_during_inference = self.index - action_index_before_inference
-                if consumed_during_inference < 0:
-                    consumed_during_inference = 0
-                # Use actual consumption if it differs from predicted delay
-                skip_processed = min(max(inference_delay, consumed_during_inference),
-                                     len(processed_actions))
-            else:
-                skip_processed = min(inference_delay, len(processed_actions))
+            skip = min(inference_delay, len(processed_actions))
             # Scale skip for original actions (may differ in length from processed
             # when slowdown interpolation is applied)
             if len(processed_actions) > 0 and len(original_actions) > 0:
                 ratio = len(original_actions) / len(processed_actions)
-                skip_original = min(int(skip_processed * ratio), len(original_actions))
+                skip_original = min(int(skip * ratio), len(original_actions))
             else:
-                skip_original = skip_processed
+                skip_original = skip
             self.original = original_actions[skip_original:].copy()
-            self.queue = processed_actions[skip_processed:].copy()
+            self.queue = processed_actions[skip:].copy()
+            self.index = 0
+
+    def append(self, original_actions, processed_actions):
+        """Append new actions to queue (non-RTC mode). Preserves remaining actions."""
+        with self.lock:
+            if self.queue is None:
+                self.original = original_actions.copy()
+                self.queue = processed_actions.copy()
+                self.index = 0
+                return
+            # Trim consumed, then append new chunk
+            self.original = np.concatenate([self.original[self.index:], original_actions])
+            self.queue = np.concatenate([self.queue[self.index:], processed_actions])
             self.index = 0
 
 
@@ -200,6 +208,20 @@ class LatencyTracker:
 
     def max(self):
         return self._max
+
+    def mean(self):
+        """Rolling average of recent latencies (avoids cold-start inflation)."""
+        if not self.values:
+            return 0.0
+        return sum(self.values) / len(self.values)
+
+    def p95(self):
+        """95th percentile of recent latencies (conservative but not inflated)."""
+        if not self.values:
+            return 0.0
+        sorted_vals = sorted(self.values)
+        idx = min(int(len(sorted_vals) * 0.95), len(sorted_vals) - 1)
+        return sorted_vals[idx]
 
 
 # ---------------------------------------------------------------------------
@@ -305,25 +327,28 @@ def request_chunk(ws, packer, obs):
 
 def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
                    shutdown_event, fps, use_hud, hud_args, task, slowdown=1,
-                   no_rtc=False):
+                   no_rtc=False, queue_threshold=30):
     """Background thread: capture observations, request chunks, update queue."""
     time_per_action = 1.0 / fps
-    queue_threshold = 30  # request new chunk when queue drops to this size
     hud_corners = None
     hud_H = None
     chunk_count = 0
     first_obs = True
 
+    # Non-RTC: trigger only when queue empty (like reference), unless overridden
+    effective_threshold = 0 if no_rtc and queue_threshold == 30 else queue_threshold
+
     try:
         while not shutdown_event.is_set():
-            if action_queue.qsize() <= queue_threshold:
+            if action_queue.qsize() <= effective_threshold:
                 t0 = time.perf_counter()
                 action_index_before = action_queue.get_action_index()
                 prev_left_over = action_queue.get_left_over()
 
-                # Compute inference delay from tracked latency
-                max_latency = latency_tracker.max()
-                inference_delay = math.ceil(max_latency / time_per_action) if max_latency > 0 else 0
+                # Compute inference delay from tracked latency (p95 is a
+                # conservative estimate without cold-start inflation)
+                latency_est = latency_tracker.p95()
+                inference_delay = math.ceil(latency_est / time_per_action) if latency_est > 0 else 0
 
                 # Capture observation (thread-safe via RobotWrapper lock)
                 joints, overhead, wrist = capture_observation(robot_wrapper, log_first=first_obs)
@@ -400,11 +425,20 @@ def inference_loop(robot_wrapper, ws, packer, action_queue, latency_tracker,
                 new_delay = math.ceil(new_latency / time_per_action)
                 latency_tracker.add(new_latency)
 
-                action_queue.replace(original, chunk, new_delay, action_index_before)
+                # Delay validation (like reference _check_delays)
+                consumed = action_queue.get_action_index() - action_index_before
+                if chunk_count > 1 and consumed != new_delay:
+                    print(f"  Delay mismatch: predicted={new_delay}, actual={consumed}")
+
+                if no_rtc:
+                    action_queue.append(original, chunk)
+                else:
+                    action_queue.replace(original, chunk, new_delay, action_index_before)
 
                 if chunk_count <= 3 or chunk_count % 10 == 0:
                     print(f"  Chunk {chunk_count}: {chunk.shape}, "
                           f"latency={new_latency:.2f}s, delay={new_delay}, "
+                          f"mode={'append' if no_rtc else 'rtc-replace'}, "
                           f"queue={action_queue.qsize()}")
             else:
                 time.sleep(0.01)
@@ -476,7 +510,7 @@ def run_async(robot_wrapper, ws, packer, args, use_hud, task, metadata):
         target=inference_loop,
         args=(robot_wrapper, ws, packer, action_queue, latency_tracker,
               shutdown_event, args.fps, use_hud, hud_args, task, args.slowdown,
-              args.no_rtc),
+              args.no_rtc, args.queue_threshold),
         daemon=True, name="Inference",
     )
     exec_thread = Thread(
@@ -488,10 +522,11 @@ def run_async(robot_wrapper, ws, packer, args, use_hud, task, metadata):
 
     rtc_server = metadata.get(b"rtc_enabled") or metadata.get("rtc_enabled")
     if args.no_rtc:
-        rtc_label = "disabled by --no-rtc"
+        rtc_label = "disabled (append mode)"
     else:
         rtc_label = "on" if rtc_server else "off on server"
-    print(f"Mode: async inference (RTC {rtc_label})")
+    effective_threshold = 0 if args.no_rtc and args.queue_threshold == 30 else args.queue_threshold
+    print(f"Mode: async inference (RTC {rtc_label}, threshold={effective_threshold})")
     print("-" * 60)
     inf_thread.start()
     exec_thread.start()
@@ -636,6 +671,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Inference only, don't execute")
     parser.add_argument("--no-rtc", action="store_true",
                         help="Disable sending RTC guidance to server")
+    parser.add_argument("--queue-threshold", type=int, default=30,
+                        help="Request new chunk when queue drops to this size (default 30, "
+                             "non-RTC defaults to 0 unless overridden)")
     parser.add_argument("--sequential", action="store_true",
                         help="Use sequential chunking (no async, for debugging)")
     parser.add_argument("--overhead-cam", type=int, default=1)
@@ -645,7 +683,7 @@ def main():
     use_hud = args.source and args.target
     task = args.task
     if use_hud:
-        task = "Pick up the highlighted piece and place it at the target"
+        task = "Move the small object from the green circle to the magenta circle"
         print(f"HUD enabled: source={args.source} target={args.target}")
 
     # Corner detection happens from the first observation frame after robot

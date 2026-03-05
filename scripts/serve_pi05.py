@@ -71,7 +71,8 @@ _unpackb = functools.partial(msgpack.unpackb, object_hook=_unpack_array)
 # Model loading
 # ---------------------------------------------------------------------------
 
-def load_model(checkpoint_path: str, device: str = "cuda", rtc: bool = False):
+def load_model(checkpoint_path: str, device: str = "cuda", rtc: bool = False,
+               execution_horizon: int = 10, guidance_weight: float = 10.0):
     """Load fine-tuned pi0.5 with preprocessor/postprocessor."""
     from lerobot.policies.pi05.modeling_pi05 import PI05Policy
     from lerobot.policies.factory import make_pre_post_processors
@@ -86,12 +87,13 @@ def load_model(checkpoint_path: str, device: str = "cuda", rtc: bool = False):
         from lerobot.configs.types import RTCAttentionSchedule
         policy.config.rtc_config = RTCConfig(
             enabled=True,
-            execution_horizon=10,
-            max_guidance_weight=10.0,
+            execution_horizon=execution_horizon,
+            max_guidance_weight=guidance_weight,
             prefix_attention_schedule=RTCAttentionSchedule.EXP,
         )
         policy.init_rtc_processor()
-        logger.info("RTC enabled: execution_horizon=10, max_guidance_weight=10.0, schedule=EXP")
+        logger.info(f"RTC enabled: execution_horizon={execution_horizon}, "
+                     f"max_guidance_weight={guidance_weight}, schedule=EXP")
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy,
@@ -252,7 +254,11 @@ async def main(args):
     import websockets.asyncio.server
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    policy, preprocessor, postprocessor = load_model(args.checkpoint, device, rtc=args.rtc)
+    policy, preprocessor, postprocessor = load_model(
+        args.checkpoint, device, rtc=args.rtc,
+        execution_horizon=args.execution_horizon,
+        guidance_weight=args.guidance_weight,
+    )
 
     handler = functools.partial(
         handle_client,
@@ -277,5 +283,9 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--rtc", action="store_true",
                         help="Enable Real-Time Chunking for smooth async inference")
+    parser.add_argument("--execution-horizon", type=int, default=10,
+                        help="RTC execution horizon (timesteps to blend with previous chunk)")
+    parser.add_argument("--guidance-weight", type=float, default=10.0,
+                        help="RTC max guidance weight (how strongly to enforce consistency)")
     args = parser.parse_args()
     asyncio.run(main(args))

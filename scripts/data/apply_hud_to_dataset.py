@@ -29,7 +29,7 @@ from cosmos_chessbot.vision.hud_overlay import (
     detect_corners,
 )
 
-DEFAULT_TASK = "Pick up the highlighted piece and place it at the target"
+DEFAULT_TASK = "Move the small object from the green circle to the magenta circle"
 
 
 def tensor_to_uint8(img_tensor: torch.Tensor) -> np.ndarray:

@@ -13,6 +13,7 @@ Endpoints:
     POST /reason/analyze_game — Turn detection from video frames
     POST /reason/detect_move  — Opponent move detection from video frames
     POST /reason/correction   — Post-failure correction planning
+    POST /reason/analyze_board — Board scene analysis (position, phase, condition)
 """
 
 import argparse
@@ -114,6 +115,14 @@ class EpisodeCritiqueRequest(BaseModel):
     piece_type: str = "piece"
     max_new_tokens: int = 1024
     temperature: float = 0.1
+
+
+class BoardAnalysisRequest(BaseModel):
+    """Request for board scene analysis."""
+    image_base64: str
+    max_new_tokens: int = 1024
+    temperature: float = 0.1
+    wrist_image_base64: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +401,34 @@ async def reason_critique_episode(request: EpisodeCritiqueRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Episode critique failed: {e}")
+
+
+@app.post("/reason/analyze_board")
+async def reason_analyze_board(request: BoardAnalysisRequest):
+    """Analyze the chess board scene (position, game phase, physical condition)."""
+    if reasoning is None:
+        raise HTTPException(status_code=503, detail="Reasoning model not loaded")
+
+    try:
+        image = _decode_image(request.image_base64)
+        wrist = _decode_image(request.wrist_image_base64) if request.wrist_image_base64 else None
+        result = reasoning.analyze_board(
+            image=image,
+            max_new_tokens=request.max_new_tokens,
+            temperature=request.temperature,
+            wrist_image=wrist,
+        )
+        return {
+            "position_summary": result.position_summary,
+            "game_phase": result.game_phase,
+            "pieces_at_risk": result.pieces_at_risk,
+            "board_condition": result.board_condition,
+            "physical_observations": result.physical_observations,
+            "confidence": result.confidence,
+            "reasoning": result.reasoning,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Board analysis failed: {e}")
 
 
 def main():

@@ -15,6 +15,7 @@ from PIL import Image
 
 from .game_reasoning import (
     ActionReasoning,
+    BoardAnalysis,
     CorrectionPlan,
     EpisodeCritique,
     GameState,
@@ -264,6 +265,38 @@ class RemoteChessGameReasoning:
             success=data.get("success", False),
             reason=data.get("reason", ""),
             physical_issues=data.get("physical_issues", []),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", ""),
+        )
+
+    def analyze_board(
+        self,
+        image: Image.Image,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
+    ) -> BoardAnalysis:
+        """Analyze board scene via remote server."""
+        payload = {
+            "image_base64": _encode_image(image),
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+        }
+        if wrist_image is not None:
+            payload["wrist_image_base64"] = _encode_image(wrist_image)
+        response = self.client.post(
+            f"{self.server_url}/reason/analyze_board",
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return BoardAnalysis(
+            position_summary=data.get("position_summary", ""),
+            game_phase=data.get("game_phase", "unknown"),
+            pieces_at_risk=data.get("pieces_at_risk", []),
+            board_condition=data.get("board_condition", "unknown"),
+            physical_observations=data.get("physical_observations", []),
             confidence=float(data.get("confidence", 0.0)),
             reasoning=data.get("reasoning", ""),
         )

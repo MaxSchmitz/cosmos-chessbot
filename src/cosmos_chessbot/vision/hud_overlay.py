@@ -20,8 +20,8 @@ import numpy as np
 _SOURCE_COLOR = (0, 255, 0)    # green -- same in RGB and BGR
 _TARGET_COLOR = (255, 0, 255)  # magenta -- same in RGB and BGR
 _OUTLINE_COLOR = (255, 255, 255)
-_MARKER_RADIUS = 14
-_OUTLINE_RADIUS = 17
+_MARKER_RADIUS = 20
+_MARKER_THICKNESS = 3  # outline only (was -1 = filled)
 
 _DEFAULT_CORNER_WEIGHTS = "models/yolo_corners.pt"
 
@@ -193,13 +193,11 @@ def draw_hud(
     Returns:
         The same image array (for convenience).
     """
-    # Source marker (green with white outline)
-    cv2.circle(image, source_px, _OUTLINE_RADIUS, _OUTLINE_COLOR, -1, cv2.LINE_AA)
-    cv2.circle(image, source_px, _MARKER_RADIUS, _SOURCE_COLOR, -1, cv2.LINE_AA)
+    # Source marker (green outline)
+    cv2.circle(image, source_px, _MARKER_RADIUS, _SOURCE_COLOR, _MARKER_THICKNESS, cv2.LINE_AA)
 
-    # Target marker (magenta with white outline)
-    cv2.circle(image, target_px, _OUTLINE_RADIUS, _OUTLINE_COLOR, -1, cv2.LINE_AA)
-    cv2.circle(image, target_px, _MARKER_RADIUS, _TARGET_COLOR, -1, cv2.LINE_AA)
+    # Target marker (magenta outline)
+    cv2.circle(image, target_px, _MARKER_RADIUS, _TARGET_COLOR, _MARKER_THICKNESS, cv2.LINE_AA)
 
     return image
 

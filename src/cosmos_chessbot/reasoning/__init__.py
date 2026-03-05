@@ -1,6 +1,7 @@
 """Chess game reasoning using Cosmos Reason2."""
 
 from .game_reasoning import (
+    BoardAnalysis,
     ChessGameReasoning,
     EpisodeCritique,
     GameState,

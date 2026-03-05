@@ -21,6 +21,22 @@ from ..utils import extract_json
 logger = logging.getLogger(__name__)
 
 
+def _extract_answer(text: str) -> str:
+    """Extract content from <answer> tags if present, otherwise return full text."""
+    match = re.search(r"<answer>\s*(.*?)\s*</answer>", text, re.DOTALL)
+    if match:
+        return match.group(1)
+    return text
+
+
+def _extract_thinking(text: str) -> str | None:
+    """Extract content from <think> tags if present."""
+    match = re.search(r"<think>\s*(.*?)\s*</think>", text, re.DOTALL)
+    if match:
+        return match.group(1)
+    return None
+
+
 class Turn(Enum):
     """Whose turn it is."""
     ROBOT = "robot"
@@ -84,88 +100,96 @@ class ChessGameReasoning:
 
     PIXELS_PER_TOKEN = 32**2
 
-    SYSTEM_PROMPT = "You are an embodied chess-playing robot with camera views of the chess board. You may receive an overhead camera view (looking down at the board from above) and/or a wrist camera view (from your gripper, close to pieces). Use all available views to reason about the physical scene."
+    SYSTEM_PROMPT = (
+        "You are an embodied chess-playing robot arm (SO-101, 5-DOF with gripper) "
+        "mounted beside a chess board. You have two cameras: an overhead egocentric "
+        "camera looking down at the board, and a wrist camera mounted on your gripper. "
+        "The chess pieces are standard Staunton style on a regulation board. "
+        "Your gripper can open wide enough to grasp any piece from the top. "
+        "Reason about the physical scene from your embodied perspective -- you are "
+        "the robot, these are your views, and you must plan and execute moves safely."
+    )
 
-    TURN_DETECTION_PROMPT = """Watch this video from my egocentric camera and reason about the chess game.
+    COT_FORMAT = """
 
-The camera view is MY view as the robot. I am playing chess against a human opponent.
+Answer using the following format:
 
-Analyze the video and answer:
-1. Whose turn is it? (mine or my opponent's)
-2. Is my opponent currently making a move? (reaching for pieces, moving a piece)
-3. Should I make my move now, or should I wait?
+<think>
+Your step-by-step reasoning about the physical scene.
+</think>
 
-Reason step-by-step about what you observe, then provide your conclusion in JSON:
+<answer>
+Your JSON response here.
+</answer>"""
+
+    TURN_DETECTION_PROMPT = """I am watching the chess board through my overhead camera. I am playing against a human opponent sitting across from me.
+
+Analyze what I see and determine:
+1. Is my opponent's hand near the board or moving a piece?
+2. Has my opponent just completed a move (hand withdrawn, piece settled)?
+3. Is it safe for me to move now, or should I wait for them to finish?
+
+Respond in JSON:
 {
     "whose_turn": "robot" or "opponent",
     "opponent_moving": true/false,
     "should_robot_act": true/false,
-    "reasoning": "your step-by-step reasoning",
     "confidence": 0.0-1.0
-}
-"""
+}"""
 
-    MOVE_DETECTION_PROMPT = """Watch this video from my egocentric camera. My opponent just made a chess move.
+    MOVE_DETECTION_PROMPT = """I just observed my opponent make a chess move. This video is from my overhead camera looking down at the board.
 
-The camera view is MY view as the robot.
+The board is oriented with white pieces (my pieces) closest to me and black pieces on the far side. Files run a-h from my left to right, ranks run 1-8 from my side outward.
 
-Identify what move they made:
-1. Which piece did they move?
-2. Where did it start? (square in algebraic notation like 'e2')
-3. Where did it end? (square in algebraic notation like 'e4')
+Identify what move my opponent made:
+1. Which piece moved? Look for which square is now empty that was occupied, and which square is now occupied that was empty.
+2. What are the from and to squares in algebraic notation (e.g., e7 to e5)?
+3. What type of piece is it?
 
-Reason step-by-step about what you observe, then provide your conclusion in JSON:
+Respond in JSON:
 {
     "move_occurred": true/false,
     "from_square": "starting square or null",
     "to_square": "ending square or null",
     "piece_type": "pawn/knight/bishop/rook/queen/king or null",
-    "reasoning": "your step-by-step reasoning",
     "confidence": 0.0-1.0
-}
-"""
+}"""
 
-    TRAJECTORY_PLAN_PROMPT = """I need to execute a chess move: {move_uci}
-Pick up the {piece_type} from {from_square} and place it on {to_square}.
+    TRAJECTORY_PLAN_PROMPT = """I need to pick up the {piece_type} on {from_square} and place it on {to_square} (move: {move_uci}).
 
-Looking at my egocentric camera view, specify the 2D trajectory my gripper should follow in normalized pixel coordinates (0-1000 range, where (0,0) is the top-left corner and (1000,1000) is the bottom-right).
+Looking at my overhead camera view, I can see the board and all pieces. My gripper approaches from above. I need to plan my gripper's path as a sequence of 2D positions in the image.
 
-Plan waypoints for:
-1. Position above the source square ({from_square}) for approach
-2. Lower to grasp the piece on {from_square}
-3. Lift the piece to safe clearance height
-4. Move to position above the target square ({to_square}), avoiding any obstacles
-5. Lower to place the piece on {to_square}
+Specify the trajectory as pixel coordinates in the image where my gripper should move. Use the actual pixel positions of the squares you can see.
 
-If there are pieces between {from_square} and {to_square} that require an arcing trajectory, add intermediate waypoints to avoid them.
+Plan these waypoints:
+1. Hover above {from_square} -- position my gripper over the piece
+2. Descend to grasp the {piece_type} on {from_square}
+3. Lift to clearance height above surrounding pieces
+4. Transit to above {to_square} -- if pieces are in the way, arc around them
+5. Descend to place on {to_square}
+6. Release and retract upward
 
-Provide your trajectory as a JSON object:
+Respond in JSON:
 {{
     "waypoints": [
         {{"point_2d": [x, y], "label": "description of this waypoint"}}
     ],
-    "reasoning": "your step-by-step reasoning about obstacle avoidance and trajectory",
     "confidence": 0.0-1.0
-}}
-"""
+}}"""
 
-    EPISODE_CRITIQUE_PROMPT = """Watch this video of a robot arm executing a chess piece pick-and-place task.
-The robot is attempting to pick up a {piece_type} from {from_square} and place it on {to_square}.
+    EPISODE_CRITIQUE_PROMPT = """This video shows my arm attempting to pick up a {piece_type} from {from_square} and place it on {to_square}. I am reviewing my own execution.
 
-Evaluate the entire execution:
-1. Approach: Did the gripper approach the piece safely without hitting other pieces?
-2. Grasp: Was the grasp stable? Did the piece slip or rotate during pickup?
-3. Lift: Was the lift smooth? Was the piece raised to a safe clearance height?
-4. Transport: Did the trajectory avoid obstacles? Were adjacent pieces at risk?
-5. Placement: Was the placement gentle and stable? Is the piece upright?
-6. Collateral: Were any non-target pieces disturbed at any point?
+Evaluate each phase of my movement:
+1. Approach: Did I approach the piece cleanly without hitting adjacent pieces?
+2. Grasp: Did I grip the piece securely? Did it slip or tilt?
+3. Lift: Did I raise the piece high enough to clear other pieces?
+4. Transport: Did I avoid knocking any pieces during transit?
+5. Placement: Did I place the piece squarely on {to_square}? Is it stable and upright?
+6. Collateral: Did I disturb any non-target pieces at any point?
 
-Rate the overall execution quality from 0 to 10, where:
-- 0: Complete failure (piece dropped, wrong location, major collision)
-- 5: Partial success (reached target but with issues)
-- 10: Perfect execution (smooth, safe, precise)
+Rate from 0 (complete failure) to 10 (perfect execution).
 
-Provide your evaluation in JSON:
+Respond in JSON:
 {{
     "overall_score": 0-10,
     "success": true or false,
@@ -174,30 +198,42 @@ Provide your evaluation in JSON:
     "trajectory_safe": true or false,
     "placement_stable": true or false,
     "physical_issues": ["list of specific issues"],
-    "confidence": 0.0-1.0,
-    "reasoning": "step-by-step evaluation"
-}}
-"""
+    "confidence": 0.0-1.0
+}}"""
 
-    GOAL_VERIFICATION_PROMPT = """I just attempted to execute a chess move: {move_uci}
-I picked up the {piece_type} from {from_square} and tried to place it on {to_square}.
+    GOAL_VERIFICATION_PROMPT = """I just tried to move the {piece_type} from {from_square} to {to_square} (move: {move_uci}). This is my overhead camera view of the board AFTER my attempt.
 
-Looking at my egocentric camera view of the board AFTER the move attempt, verify:
-1. Is the piece correctly placed on {to_square}?
-2. Is the piece stable and upright (not leaning or tipped)?
-3. Were any adjacent pieces bumped or displaced?
-4. Did the gripper fully release the piece?
-5. Are there any other physical issues visible?
+Check the physical result:
+1. Is there a {piece_type} on {to_square}? Is it centered and upright?
+2. Is {from_square} now empty (piece successfully picked up)?
+3. Are any adjacent pieces knocked over, displaced, or leaning?
+4. Is my gripper clear of the board (not still holding a piece)?
 
-Provide your verification in JSON:
+Respond in JSON:
 {{
     "success": true or false,
-    "reason": "brief explanation of the result",
-    "physical_issues": ["list of physical issues detected, empty if none"],
-    "confidence": 0.0-1.0,
-    "reasoning": "your step-by-step reasoning about the physical outcome"
-}}
-"""
+    "reason": "brief explanation",
+    "physical_issues": ["list of issues, empty if none"],
+    "confidence": 0.0-1.0
+}}"""
+
+    BOARD_ANALYSIS_PROMPT = """I am looking at a chess board through my overhead camera. Describe what I see:
+
+1. What is the current position? Identify where the major pieces are (kings, queens, rooks, bishops, knights) and the general pawn structure.
+2. What phase of the game is this? (opening, middlegame, endgame)
+3. Are there any pieces that appear to be under attack or in danger?
+4. Is the board set up correctly, or are any pieces knocked over, displaced, or off-center on their squares?
+5. Can I see my robot arm or gripper in the image? If so, where is it relative to the board?
+
+Respond in JSON:
+{
+    "position_summary": "brief description of the position",
+    "game_phase": "opening/middlegame/endgame",
+    "pieces_at_risk": ["any pieces under immediate threat"],
+    "board_condition": "clean/pieces_displaced/pieces_knocked",
+    "physical_observations": ["anything notable about the physical scene"],
+    "confidence": 0.0-1.0
+}"""
 
     @staticmethod
     def _build_image_content(
@@ -251,6 +287,99 @@ Provide your verification in JSON:
 
         self.processor = transformers.Qwen3VLProcessor.from_pretrained(model_name)
 
+    def analyze_board(
+        self,
+        image: Image.Image,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        wrist_image: Optional[Image.Image] = None,
+    ) -> "BoardAnalysis":
+        """Analyze the chess board scene from camera images.
+
+        Uses Cosmos Reason2 to describe the position, game phase,
+        and physical state of the board. Useful for demo visualization.
+
+        Args:
+            image: Overhead camera view
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            wrist_image: Optional wrist camera view
+
+        Returns:
+            BoardAnalysis with scene description and reasoning
+        """
+        conversation = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    *self._build_image_content(image, wrist_image),
+                    {"type": "text", "text": self.BOARD_ANALYSIS_PROMPT + self.COT_FORMAT},
+                ],
+            },
+        ]
+
+        inputs = self.processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.model.device)
+
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return self._parse_board_analysis(output_text)
+
+    def _parse_board_analysis(self, response: str) -> "BoardAnalysis":
+        """Parse Cosmos response into BoardAnalysis."""
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
+
+        if data is not None:
+            try:
+                return BoardAnalysis(
+                    position_summary=data.get("position_summary", ""),
+                    game_phase=data.get("game_phase", "unknown"),
+                    pieces_at_risk=data.get("pieces_at_risk", []),
+                    board_condition=data.get("board_condition", "unknown"),
+                    physical_observations=data.get("physical_observations", []),
+                    confidence=float(data.get("confidence", 0.0)),
+                    reasoning=thinking or response,
+                )
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
+        return BoardAnalysis(
+            position_summary="",
+            game_phase="unknown",
+            pieces_at_risk=[],
+            board_condition="unknown",
+            physical_observations=[],
+            confidence=0.0,
+            reasoning=response,
+        )
+
     def analyze_game_state(
         self,
         video_frames: list[Image.Image],
@@ -280,7 +409,7 @@ Provide your verification in JSON:
                 "role": "user",
                 "content": [
                     {"type": "video", "video": video_frames},
-                    {"type": "text", "text": self.TURN_DETECTION_PROMPT},
+                    {"type": "text", "text": self.TURN_DETECTION_PROMPT + self.COT_FORMAT},
                 ],
             },
         ]
@@ -345,7 +474,7 @@ Provide your verification in JSON:
                 "role": "user",
                 "content": [
                     {"type": "video", "video": video_frames},
-                    {"type": "text", "text": self.MOVE_DETECTION_PROMPT},
+                    {"type": "text", "text": self.MOVE_DETECTION_PROMPT + self.COT_FORMAT},
                 ],
             },
         ]
@@ -389,7 +518,9 @@ Provide your verification in JSON:
         Returns:
             Parsed GameState
         """
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -404,7 +535,7 @@ Provide your verification in JSON:
                     whose_turn=whose_turn,
                     opponent_moving=data.get("opponent_moving", False),
                     should_robot_act=data.get("should_robot_act", False),
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                     confidence=float(data.get("confidence", 0.0)),
                 )
             except (json.JSONDecodeError, ValueError, KeyError):
@@ -428,7 +559,9 @@ Provide your verification in JSON:
         Returns:
             Parsed MoveDetection
         """
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -438,7 +571,7 @@ Provide your verification in JSON:
                     to_square=data.get("to_square"),
                     piece_type=data.get("piece_type"),
                     confidence=float(data.get("confidence", 0.0)),
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                 )
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass
@@ -479,29 +612,26 @@ Provide your verification in JSON:
         # Format differences for prompt
         diff_text = "\n".join([str(d) for d in differences])
 
-        prompt = f"""I tried to execute a chess move but the result is incorrect.
+        prompt = f"""My move did not execute correctly. I can see the board through my overhead camera.
 
-Expected board state (FEN): {expected_fen}
-Actual board state (FEN): {actual_fen}
+Expected board (FEN): {expected_fen}
+Actual board (FEN): {actual_fen}
 
-Differences found:
+Differences:
 {diff_text}
 
-Looking at my egocentric camera view, reason about:
-1. What physically went wrong? (piece slipped, gripper issue, collision, etc.)
-2. Why did the piece end up in the wrong position?
-3. What physical correction is needed to fix this?
-4. Are there any obstacles or risks to making the correction?
+Looking at the current board state, analyze:
+1. What went wrong physically? Did the piece slip from my gripper, land on the wrong square, knock another piece, or fail to be picked up at all?
+2. What correction do I need to make? Which piece needs to move where?
+3. Are there any pieces in the way of the correction?
 
-Provide your analysis in JSON:
+Respond in JSON:
 {{
-    "physical_cause": "description of what went wrong physically",
-    "correction_needed": "description of the correction",
-    "obstacles": ["list any obstacles to correction"],
-    "confidence": 0.0-1.0,
-    "reasoning": "your step-by-step reasoning"
-}}
-"""
+    "physical_cause": "what went wrong",
+    "correction_needed": "what to do to fix it",
+    "obstacles": ["any obstacles to the correction"],
+    "confidence": 0.0-1.0
+}}"""
 
         # Create conversation
         conversation = [
@@ -513,7 +643,7 @@ Provide your analysis in JSON:
                 "role": "user",
                 "content": [
                     *self._build_image_content(image, wrist_image),
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": prompt + self.COT_FORMAT},
                 ],
             },
         ]
@@ -573,27 +703,23 @@ Provide your analysis in JSON:
         Returns:
             ActionReasoning with obstacles, grasp strategy, and risks
         """
-        prompt = f"""I need to execute a chess move: {move_uci}
-Pick up the piece from {from_square} and place it on {to_square}.
+        prompt = f"""I need to move a piece from {from_square} to {to_square} (move: {move_uci}). This is my overhead camera view of the board.
 
-Looking at my egocentric camera view, reason about:
-1. What obstacles are in the path between {from_square} and {to_square}?
-2. What pieces are adjacent to {from_square} and {to_square}?
-3. What grasp strategy should I use for this piece?
-4. What's the safest trajectory to avoid knocking over other pieces?
-5. Are there any physical risks or challenges I should be aware of?
+Before I move, I need to plan carefully. Analyze the physical scene:
+1. What pieces are between {from_square} and {to_square} that I could collide with during transit?
+2. What pieces are immediately adjacent to {from_square} (risk of knocking when grasping) and {to_square} (risk of knocking when placing)?
+3. How should I approach the grasp? My gripper opens to about 4cm and descends from above. The piece is roughly 3-5cm tall.
+4. What is the safest trajectory -- should I go straight, or arc to avoid crowded squares?
 
-Provide your analysis in JSON:
+Respond in JSON:
 {{
-    "obstacles": ["list obstacles in the path"],
-    "adjacent_pieces": ["pieces near from/to squares"],
-    "grasp_strategy": "how to grasp this piece",
-    "trajectory_advice": "safest path to take",
-    "risks": ["potential issues to watch for"],
-    "confidence": 0.0-1.0,
-    "reasoning": "your step-by-step reasoning"
-}}
-"""
+    "obstacles": ["pieces in the transit path"],
+    "adjacent_pieces": ["pieces next to source and target squares"],
+    "grasp_strategy": "how to approach and grasp",
+    "trajectory_advice": "recommended path",
+    "risks": ["potential problems"],
+    "confidence": 0.0-1.0
+}}"""
 
         # Create conversation
         conversation = [
@@ -605,7 +731,7 @@ Provide your analysis in JSON:
                 "role": "user",
                 "content": [
                     *self._build_image_content(image, wrist_image),
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": prompt + self.COT_FORMAT},
                 ],
             },
         ]
@@ -642,7 +768,9 @@ Provide your analysis in JSON:
 
     def _parse_correction_plan(self, response: str) -> "CorrectionPlan":
         """Parse Cosmos response into CorrectionPlan."""
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -651,7 +779,7 @@ Provide your analysis in JSON:
                     correction_needed=data.get("correction_needed", ""),
                     obstacles=data.get("obstacles", []),
                     confidence=float(data.get("confidence", 0.0)),
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                 )
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass
@@ -667,7 +795,9 @@ Provide your analysis in JSON:
 
     def _parse_action_reasoning(self, response: str) -> "ActionReasoning":
         """Parse Cosmos response into ActionReasoning."""
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -678,7 +808,7 @@ Provide your analysis in JSON:
                     trajectory_advice=data.get("trajectory_advice", ""),
                     risks=data.get("risks", []),
                     confidence=float(data.get("confidence", 0.0)),
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                 )
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass
@@ -738,7 +868,7 @@ Provide your analysis in JSON:
                 "role": "user",
                 "content": [
                     *self._build_image_content(image, wrist_image),
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": prompt + self.COT_FORMAT},
                 ],
             },
         ]
@@ -816,7 +946,7 @@ Provide your analysis in JSON:
                 "role": "user",
                 "content": [
                     *self._build_image_content(image, wrist_image),
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": prompt + self.COT_FORMAT},
                 ],
             },
         ]
@@ -889,7 +1019,7 @@ Provide your analysis in JSON:
                 "role": "user",
                 "content": [
                     {"type": "video", "video": video_frames},
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": prompt + self.COT_FORMAT},
                 ],
             },
         ]
@@ -924,7 +1054,9 @@ Provide your analysis in JSON:
 
     def _parse_episode_critique(self, response: str) -> "EpisodeCritique":
         """Parse Cosmos response into EpisodeCritique."""
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -937,7 +1069,7 @@ Provide your analysis in JSON:
                     placement_stable=data.get("placement_stable", False),
                     physical_issues=data.get("physical_issues", []),
                     confidence=float(data.get("confidence", 0.0)),
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                 )
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass
@@ -957,7 +1089,9 @@ Provide your analysis in JSON:
 
     def _parse_trajectory_plan(self, response: str, move_uci: str) -> "TrajectoryPlan":
         """Parse Cosmos response into TrajectoryPlan."""
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -970,7 +1104,7 @@ Provide your analysis in JSON:
                 return TrajectoryPlan(
                     waypoints=waypoints,
                     move_uci=move_uci,
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                     confidence=float(data.get("confidence", 0.0)),
                 )
             except (json.JSONDecodeError, ValueError, KeyError, TypeError):
@@ -986,7 +1120,9 @@ Provide your analysis in JSON:
 
     def _parse_goal_verification(self, response: str) -> "GoalVerification":
         """Parse Cosmos response into GoalVerification."""
-        data = extract_json(response)
+        thinking = _extract_thinking(response)
+        answer_text = _extract_answer(response)
+        data = extract_json(answer_text)
 
         if data is not None:
             try:
@@ -995,7 +1131,7 @@ Provide your analysis in JSON:
                     reason=data.get("reason", ""),
                     physical_issues=data.get("physical_issues", []),
                     confidence=float(data.get("confidence", 0.0)),
-                    reasoning=data.get("reasoning", response),
+                    reasoning=thinking or data.get("reasoning", response),
                 )
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass
@@ -1008,6 +1144,32 @@ Provide your analysis in JSON:
             confidence=0.0,
             reasoning=response,
         )
+
+
+@dataclass
+class BoardAnalysis:
+    """Scene analysis of the chess board."""
+
+    position_summary: str
+    """Brief description of the position."""
+
+    game_phase: str
+    """Game phase: opening, middlegame, or endgame."""
+
+    pieces_at_risk: list[str]
+    """Pieces under immediate threat."""
+
+    board_condition: str
+    """Physical condition: clean, pieces_displaced, pieces_knocked."""
+
+    physical_observations: list[str]
+    """Notable physical observations about the scene."""
+
+    confidence: float
+    """Confidence in the analysis."""
+
+    reasoning: str
+    """Step-by-step reasoning from Cosmos."""
 
 
 @dataclass
