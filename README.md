@@ -60,7 +60,7 @@ uv run python scripts/cosmos_server.py --host 0.0.0.0 --port 8000 &
 
 # Pi0.5 VLA inference server (port 8001)
 uv run python scripts/serve_pi05.py \
-    --checkpoint outputs/pi05_hud/checkpoints/005000/pretrained_model/ \
+    --checkpoint outputs/pi05_chess_hud/checkpoints/003000/pretrained_model/ \
     --port 8001 &
 ```
 
@@ -307,7 +307,7 @@ This decouples move selection from motor control -- the same policy handles any 
 
 ### 5. SO-101 Robotic Arm
 
-- 5 arm joints + 1 gripper
+- 6-DOF arm (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper)
 - Egocentric camera for global perception
 - Wrist camera for close-range grasp verification
 
@@ -417,7 +417,7 @@ Start the pi0.5 server on your GPU machine, pointing to the fine-tuned HUD check
 ```bash
 # On GPU server
 uv run python scripts/serve_pi05.py \
-    --checkpoint outputs/pi05_hud/checkpoints/005000/pretrained_model/ \
+    --checkpoint outputs/pi05_chess_hud/checkpoints/003000/pretrained_model/ \
     --port 8001
 ```
 

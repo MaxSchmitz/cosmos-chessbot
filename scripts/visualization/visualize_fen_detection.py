@@ -132,37 +132,55 @@ def run_live(detector, args):
     print(f"Camera {args.camera}: {w}x{h}")
     print("Press 'q' to quit, 's' to save frame")
 
+    # Video writer
+    writer = None
+    frame_count = 0
+    if args.record:
+        Path(args.record).parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(args.record, fourcc, 30, (w, h))
+        print(f"Recording to: {args.record}")
+
     # Warmup
     for _ in range(10):
         cap.grab()
 
     frame_idx = 0
-    while True:
-        t0 = time.perf_counter()
-        ret, frame = cap.read()
-        if not ret:
-            print("Camera read failed")
-            break
+    try:
+        while True:
+            t0 = time.perf_counter()
+            ret, frame = cap.read()
+            if not ret:
+                print("Camera read failed")
+                break
 
-        image_rgb = frame[:, :, ::-1]
-        corners, raw, mapped, fen = run_detection(detector, image_rgb, args.conf)
-        dt = time.perf_counter() - t0
-        fps = 1.0 / dt if dt > 0 else 0
+            image_rgb = frame[:, :, ::-1]
+            corners, raw, mapped, fen = run_detection(detector, image_rgb, args.conf)
+            dt = time.perf_counter() - t0
+            fps = 1.0 / dt if dt > 0 else 0
 
-        vis = draw_annotations(frame, corners, raw, mapped, fen, fps=fps)
-        cv2.imshow("FEN Detection", vis)
+            vis = draw_annotations(frame, corners, raw, mapped, fen, fps=fps)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        if key == ord("s"):
-            out = f"/tmp/fen_live_{frame_idx:04d}.jpg"
-            cv2.imwrite(out, vis)
-            print(f"Saved {out}  FEN: {fen}")
-            frame_idx += 1
+            if writer:
+                writer.write(vis)
+                frame_count += 1
 
-    cap.release()
-    cv2.destroyAllWindows()
+            cv2.imshow("FEN Detection", vis)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord("s"):
+                out = f"/tmp/fen_live_{frame_idx:04d}.jpg"
+                cv2.imwrite(out, vis)
+                print(f"Saved {out}  FEN: {fen}")
+                frame_idx += 1
+    finally:
+        if writer:
+            writer.release()
+            print(f"Saved {frame_count} frames to {args.record}")
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 def run_image(detector, args):
@@ -283,6 +301,8 @@ def main():
     parser.add_argument("--conf", type=float, default=0.10,
                         help="YOLO confidence threshold (default: 0.10)")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--record", type=str, default=None,
+                        help="Output video file (e.g. shots/yolo_demo.mp4)")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--no-dino", action="store_true",
                         help="Disable DINO-MLP classifier (use YOLO classes only)")

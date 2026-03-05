@@ -6,7 +6,7 @@ import numpy as np
 from pathlib import Path
 
 FINETUNED = "models/yolo_corners.pt"
-BASE = "yolo26n-pose.pt"
+BASE = "models/pretrained/yolo26n-pose.pt"
 
 def draw_corners(img, corners, label, conf=None):
     """Draw detected corners on image copy."""

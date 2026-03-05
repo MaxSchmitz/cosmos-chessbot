@@ -10,9 +10,21 @@ from typing import Optional
 import chess
 
 from ..vision import (
-    Camera, CameraConfig, CosmosPerception, BoardState,
-    RemoteCosmosPerception, YOLODINOFenDetector,
+    Camera, CameraConfig, YOLODINOFenDetector,
 )
+
+
+@dataclass
+class BoardState:
+    """Extracted chess board state."""
+    fen: str
+    confidence: float
+    anomalies: list[str]
+    raw_response: str
+
+    @property
+    def board_detected(self) -> bool:
+        return self.fen != "NO_BOARD_DETECTED" and self.confidence > 0.0
 from ..stockfish import StockfishEngine
 from ..reasoning import (
     ChessGameReasoning,
@@ -53,8 +65,8 @@ class OrchestratorConfig:
     data_dir: Path = Path("data/raw")
 
     # Policy configuration
-    policy_type: str = "cosmos"
-    """Policy to use: 'pi05' or 'cosmos'"""
+    policy_type: str = "pi05"
+    """Policy to use: 'pi05' or 'waypoint'"""
     policy_checkpoint: Optional[Path] = None
     """Path to policy checkpoint (None uses base model)"""
     enable_planning: bool = True
@@ -63,7 +75,7 @@ class OrchestratorConfig:
     # Pi0.5 configuration
     pi05_server_url: str = "ws://localhost:8001"
     """WebSocket URL for remote pi0.5 inference server."""
-    pi05_num_steps: int = 500
+    pi05_num_steps: int = 699
     """Max action steps per pi0.5 episode."""
     pi05_fps: float = 30.0
     """Action execution rate for pi0.5."""
@@ -129,24 +141,14 @@ class ChessOrchestrator:
             )
         )
 
-        # Initialize perception backend
-        if config.perception_backend == "yolo":
-            logger.info("Using YOLO26-DINO-MLP perception backend")
-            self._yolo_detector = YOLODINOFenDetector(
-                yolo_weights=config.yolo_piece_weights or "models/yolo_pieces.pt",
-                corner_weights=config.yolo_corner_weights or "models/yolo_corners.pt",
-                mlp_weights=config.yolo_mlp_weights,
-                static_corners=config.static_corners,
-            )
-            self.perception = None  # FEN detection handled by _yolo_detector
-        elif config.cosmos_server_url:
-            logger.info("Using remote Cosmos server at %s", config.cosmos_server_url)
-            self._yolo_detector = None
-            self.perception = RemoteCosmosPerception(server_url=config.cosmos_server_url)
-        else:
-            logger.info("Using local Cosmos model: %s", config.cosmos_model)
-            self._yolo_detector = None
-            self.perception = CosmosPerception(model_name=config.cosmos_model)
+        # Initialize perception backend (YOLO-DINO)
+        logger.info("Using YOLO26-DINO-MLP perception backend")
+        self._yolo_detector = YOLODINOFenDetector(
+            yolo_weights=config.yolo_piece_weights or "models/yolo_pieces.pt",
+            corner_weights=config.yolo_corner_weights or "models/yolo_corners.pt",
+            mlp_weights=config.yolo_mlp_weights,
+            static_corners=config.static_corners,
+        )
 
         # Initialize Stockfish
         self.engine = StockfishEngine(engine_path=config.stockfish_path)
@@ -200,23 +202,10 @@ class ChessOrchestrator:
             # no local policy object needed.
             self.policy = None
             print(f"Pi0.5 policy: remote server at {self.config.pi05_server_url}")
-        elif self.config.policy_type == "ppo":
-            from ..policy.ppo_policy import PPOPolicy
-            print("Initializing PPO policy...")
-            self.policy = PPOPolicy(
-                checkpoint_path=self.config.policy_checkpoint,
-            )
         elif self.config.policy_type == "waypoint":
             from ..policy.waypoint_policy import WaypointPolicy
             print("Initializing Waypoint policy (Cosmos IK)...")
             self.policy = WaypointPolicy()
-        elif self.config.policy_type == "cosmos":
-            from ..policy.cosmos_policy import CosmosPolicy
-            print(f"Initializing Cosmos Policy...")
-            self.policy = CosmosPolicy(
-                checkpoint_path=self.config.policy_checkpoint,
-                enable_planning=self.config.enable_planning
-            )
         else:
             raise ValueError(f"Unknown policy type: {self.config.policy_type}")
 
@@ -352,15 +341,13 @@ class ChessOrchestrator:
         Returns:
             BoardState with FEN, confidence, and anomalies
         """
-        if self._yolo_detector is not None:
-            import numpy as np
-            if not isinstance(overhead_image, np.ndarray):
-                image_np = np.array(overhead_image)
-            else:
-                image_np = overhead_image
-            fen = self._yolo_detector.detect_fen(image_np, verbose=logger.isEnabledFor(logging.DEBUG))
-            return BoardState(fen=fen, confidence=1.0, anomalies=[], raw_response="")
-        return self.perception.perceive(overhead_image)
+        import numpy as np
+        if not isinstance(overhead_image, np.ndarray):
+            image_np = np.array(overhead_image)
+        else:
+            image_np = overhead_image
+        fen = self._yolo_detector.detect_fen(image_np, verbose=logger.isEnabledFor(logging.DEBUG))
+        return BoardState(fen=fen, confidence=1.0, anomalies=[], raw_response="")
 
     def plan(self, board_state: BoardState) -> str:
         """Get best chess move from Stockfish.
@@ -497,18 +484,6 @@ class ChessOrchestrator:
                 send_action_fn=self._send_joint_targets,
             )
 
-        # PPO: run closed-loop control with live observations
-        if self.config.policy_type == "ppo":
-            from ..policy.ppo_policy import PPOPolicy
-            assert isinstance(self.policy, PPOPolicy)
-            return self.policy.run_control_loop(
-                robot=self.robot,
-                source_square=intent["pick_square"],
-                target_square=intent["place_square"],
-                get_state_fn=self._get_robot_state,
-                send_action_fn=self._send_joint_targets,
-            )
-
         # Pi0.5 with HUD overlay: chunked closed-loop execution
         if self.config.policy_type == "pi05":
             return self._execute_pi05_hud(intent)
@@ -549,7 +524,7 @@ class ChessOrchestrator:
 
         source = intent["pick_square"]
         target = intent["place_square"]
-        task = "Pick up the highlighted piece and place it at the target"
+        task = "Move the small object from the green circle to the magenta circle"
 
         logger.info("Pi0.5 + HUD execution: %s -> %s", source, target)
 
@@ -646,14 +621,13 @@ class ChessOrchestrator:
                 else:
                     wrist = np.zeros_like(overhead)
 
-                # Detect board corners on first frame, cache for episode
-                if hud_corners is None:
-                    hud_corners = detect_corners(overhead)
-                    if hud_corners is not None:
-                        hud_H = compute_homography(hud_corners)
-                        logger.info("HUD: detected board corners")
-                    else:
-                        logger.warning("HUD: could not detect board corners")
+                # Sticky corner detection: only update on high-confidence detections
+                corners, detection_conf = detect_corners(overhead, return_conf=True)
+                if corners is not None and detection_conf >= 0.98:
+                    hud_corners = corners
+                    hud_H = compute_homography(hud_corners)
+                    if chunk_count == 0:
+                        logger.info("HUD: detected board corners (conf=%.3f)", detection_conf)
 
                 # Apply HUD overlay
                 apply_hud(overhead, source, target, hud_corners, hud_H)
@@ -926,7 +900,7 @@ class ChessOrchestrator:
         Returns:
             True if recovery succeeded
         """
-        print(f"🔧 Attempting recovery...")
+        print("Attempting recovery...")
 
         for attempt in range(max_attempts):
             print(f"  Recovery attempt {attempt + 1}/{max_attempts}")
@@ -950,8 +924,8 @@ class ChessOrchestrator:
             correction_move = generate_correction_move(fen_comparison)
 
             if correction_move is None:
-                print(f"  ❌ Cannot automatically generate correction")
-                print(f"     (Complex case - would need human intervention)")
+                print("  Cannot automatically generate correction")
+                print("     (Complex case - would need human intervention)")
                 return False
 
             print(f"  Correction move: {correction_move}")
@@ -966,21 +940,21 @@ class ChessOrchestrator:
 
             exec_success = self.execute(correction_intent)
             if not exec_success:
-                print(f"  ❌ Correction execution failed")
+                print("  Correction execution failed")
                 continue
 
             # Verify correction
             verify_success, new_state, new_comparison, _ = self.verify(expected_fen)
 
             if verify_success:
-                print(f"  ✅ Recovery successful!")
+                print("  Recovery successful!")
                 return True
 
             # Update for next attempt
             failure_state = new_state
             fen_comparison = new_comparison
 
-        print(f"❌ Recovery failed after {max_attempts} attempts")
+        print(f"Recovery failed after {max_attempts} attempts")
         return False
 
     def execute_move_with_verification(
@@ -1008,7 +982,7 @@ class ChessOrchestrator:
         """
         # 1. Calculate expected FEN after move
         expected_fen = calculate_expected_fen(current_fen, move)
-        print(f"\n📋 Executing move: {move}")
+        print(f"\nExecuting move: {move}")
         print(f"   Current FEN:  {current_fen}")
         print(f"   Expected FEN: {expected_fen}")
 
@@ -1022,25 +996,25 @@ class ChessOrchestrator:
         intent = self.compile_intent(move, board_state, image=current_image, wrist_image=wrist_image)
 
         # 3. Execute move
-        print(f"\n🤖 Executing action...")
+        print("\nExecuting action...")
         exec_success = self.execute(intent)
 
         if not exec_success:
-            print(f"❌ Execution failed at robot control level")
+            print("Execution failed at robot control level")
             return False
 
         # 4. Verify using visual check + FEN comparison
-        print(f"\n🔍 Verifying result...")
+        print("\nVerifying result...")
         verify_success, actual_state, fen_comparison, goal_check = self.verify(
             expected_fen, intent=intent
         )
 
         if verify_success:
-            print(f"✅ Move completed successfully!")
+            print("Move completed successfully!")
             return True
 
         # 5. Recover if verification failed
-        print(f"\n🔧 Move verification failed, attempting recovery...")
+        print("\nMove verification failed, attempting recovery...")
         return self.recover(intent, expected_fen, actual_state, fen_comparison)
 
     def run_one_move(self) -> bool:

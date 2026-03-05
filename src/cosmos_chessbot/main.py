@@ -55,9 +55,9 @@ def main():
     parser.add_argument(
         "--policy",
         type=str,
-        default="cosmos",
-        choices=["pi05", "cosmos", "ppo", "waypoint"],
-        help="Policy to use: pi05, cosmos, ppo, or waypoint (default: cosmos)",
+        default="pi05",
+        choices=["pi05", "waypoint"],
+        help="Policy to use: pi05 (VLA with HUD) or waypoint (geometric IK)",
     )
     parser.add_argument(
         "--policy-checkpoint",

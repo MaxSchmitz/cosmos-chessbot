@@ -32,7 +32,7 @@ except ImportError:
 def main():
     parser = argparse.ArgumentParser(description="Train YOLO26 pose for board corner detection")
     parser.add_argument('--data', type=Path, default=Path('data/chessred2k_pose/board_corners.yaml'))
-    parser.add_argument('--model', type=str, default='yolo26n-pose.pt')
+    parser.add_argument('--model', type=str, default='models/pretrained/yolo26n-pose.pt')
     parser.add_argument('--epochs', type=int, default=60)
     parser.add_argument('--batch', type=int, default=4)
     parser.add_argument('--device', type=str, default='mps')

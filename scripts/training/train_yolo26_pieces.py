@@ -32,7 +32,7 @@ except ImportError:
 
 def train_yolo26(
     data_yaml: Path,
-    model_name: str = 'yolo26n.pt',  # YOLO26n - latest with 43% faster inference
+    model_name: str = 'models/pretrained/yolo26n.pt',
     epochs: int = 100,
     imgsz: int = 640,
     batch: int = 16,
@@ -142,8 +142,8 @@ def main():
     parser.add_argument(
         '--model',
         type=str,
-        default='yolo26n.pt',
-        help='Model variant (yolo26n.pt, yolo26s.pt, yolo26m.pt, yolo26l.pt, yolo26x.pt)'
+        default='models/pretrained/yolo26n.pt',
+        help='Pretrained model path'
     )
     parser.add_argument(
         '--epochs',
